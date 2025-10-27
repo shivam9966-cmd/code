@@ -133,3 +133,34 @@ def moving_avg_anomaly(
     )
 
     return result_df, anomaly_report
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# result_df must come from a DF already filtered to revenue accounts, or pass the raw 'actuals' if that's fine
+result_df, anomaly_report = moving_avg_anomaly(
+    df=revenue_df,                 # your filtered dataset
+    entity_cols=["account"],       # dimensions
+    date_col="DATE",
+    value_col="Amount",            # or "total_amount" if you've pre-aggregated
+    kpi_name="Revenue",
+    aan_level="org-account",
+    window_size=3,
+    min_points=3,
+    k=2.0
+)
+
+# See outputs
+result_df.show(10, truncate=False)
+anomaly_report.show(10, truncate=False)
