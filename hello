@@ -1,0 +1,135 @@
+from pyspark.sql import functions as F
+from pyspark.sql import Window
+
+def moving_avg_anomaly(
+    df,
+    entity_cols,            # list[str] -> dimensions to group by (e.g. ["account"] or ["country","state","sku"])
+    date_col,               # str       -> date column name
+    value_col,              # str       -> metric column name (numeric)
+    kpi_name,               # str       -> e.g. "Revenue"
+    aan_level,              # str       -> e.g. "org-**-sku" or "org-account"
+    window_size=3,          # int       -> rolling window size (includes current row)
+    min_points=3,           # int       -> need at least this many deviations to compute threshold
+    k=2.0                   # float     -> threshold multiplier (mean_dev + k * sd_dev)
+):
+    """
+    Returns:
+      result_df        -> per entity x date with totals, moving_avg, deviations, threshold, is_anomaly
+      anomaly_report   -> AAN-formatted table requested
+    """
+
+    # --- 0) Sanitise types (safe casts) ---
+    base = (
+        df
+        .withColumn(date_col, F.to_date(F.col(date_col)))
+        .withColumn(value_col, F.col(value_col).cast("double"))
+    )
+
+    # --- 1) Aggregate to entity x date (sum) ---
+    group_cols = [F.col(c) for c in entity_cols] + [F.col(date_col)]
+    agg_df = (
+        base
+        .groupBy(*([c for c in entity_cols] + [date_col]))
+        .agg(F.sum(value_col).alias("total_value"))
+    )
+
+    # --- 2) Rolling window per entity ---
+    w = (
+        Window
+        .partitionBy(*entity_cols)
+        .orderBy(F.col(date_col))
+        .rowsBetween(-(window_size-1), 0)     # include current + previous window_size-1 rows
+    )
+
+    # moving average
+    dev_df = (
+        agg_df
+        .withColumn("moving_avg", F.avg("total_value").over(w))
+        # signed % deviation; avoid div/0 and null MA
+        .withColumn(
+            "pct_dev_from_ma",
+            F.when((F.col("moving_avg").isNull()) | (F.col("moving_avg") == 0), F.lit(None))
+             .otherwise((F.col("total_value") - F.col("moving_avg")) / F.col("moving_avg"))
+        )
+    )
+
+    # --- 3) Per-entity deviation statistics for dynamic threshold ---
+    stats_by_entity = (
+        dev_df
+        .groupBy(*entity_cols)
+        .agg(
+            F.mean("pct_dev_from_ma").alias("mean_dev"),
+            F.stddev("pct_dev_from_ma").alias("sd_dev"),
+            F.count(F.col("pct_dev_from_ma")).alias("n_dev")
+        )
+    )
+
+    # --- 4) Join stats and decide anomalies (dynamic threshold per entity) ---
+    result_df = (
+        dev_df
+        .join(stats_by_entity, on=entity_cols, how="left")
+        .withColumn(
+            "dyn_threshold",
+            F.when(F.col("n_dev") >= F.lit(min_points),
+                   F.col("mean_dev") + F.lit(k) * F.col("sd_dev"))
+             .otherwise(F.lit(None))
+        )
+        .withColumn(
+            "is_anomaly",
+            F.when(F.col("dyn_threshold").isNull(), F.lit(False))
+             .otherwise(F.abs(F.col("pct_dev_from_ma")) > F.abs(F.col("dyn_threshold")))
+        )
+        .orderBy(*entity_cols, date_col)
+    )
+
+    # --- 5) Build AAN-formatted Anomaly Report (only anomalies) ---
+    # Compose a full dimension path for aan/aan_value (entity key)
+    entity_key = F.concat_ws("||", *[F.col(c).cast("string") for c in entity_cols])
+
+    anomaly_report = (
+        result_df
+        .filter(F.col("is_anomaly") == True)
+        .withColumn("aan", F.concat_ws("_", F.lit(kpi_name), entity_key))
+        .withColumn("aan_date", F.current_date())
+        .withColumn("predictive_date", F.col(date_col))
+        .withColumn("aan_level", F.lit(aan_level))
+        # % deviation as text (signed); keep 2 decimals with sign
+        .withColumn("aan_delta_num", (F.col("pct_dev_from_ma") * 100.0))
+        .withColumn("aan_delta",
+                    F.format_string("%+.2f%%", F.col("aan_delta_num")))
+        .withColumn("aan_attr", F.col("moving_avg"))  # baseline
+        .withColumn(
+            "aan_ranking",
+            F.row_number().over(Window.orderBy(F.abs(F.col("pct_dev_from_ma")).desc())).cast("string")
+        )
+        .withColumn(
+            "inference",
+            F.concat(
+                F.lit(kpi_name), F.lit(" for "),
+                entity_key, F.lit(" on "),
+                F.date_format(F.col(date_col), "yyyy-MM-dd"),
+                F.lit(" deviated by "),
+                F.format_string("%+.2f%%", F.col("aan_delta_num")),
+                F.lit(" vs baseline "),
+                F.format_number(F.col("moving_avg"), 2)
+            )
+        )
+        .withColumn("aan_name", F.lit(kpi_name))
+        .withColumn("aan_value", entity_key)
+        .withColumn(
+            "anomaly_id",
+            F.concat_ws(
+                "_",
+                F.date_format(F.col(date_col), "yyyyMMdd"),
+                entity_key,
+                F.lit(kpi_name)
+            )
+        )
+        .select(
+            "aan", "aan_date", "predictive_date", "aan_level",
+            "aan_delta", "aan_attr", "aan_ranking", "inference",
+            "aan_name", "aan_value", "anomaly_id"
+        )
+    )
+
+    return result_df, anomaly_report
