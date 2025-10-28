@@ -1,3 +1,7 @@
+TARGET_PATH = "Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI"
+
+
+
 writer = final_df
 if COALESCE_SINGLE_FILE and OUTPUT_FORMAT in ("parquet","csv"):
     writer = writer.coalesce(1)
