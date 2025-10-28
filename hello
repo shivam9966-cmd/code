@@ -1,2 +1,164 @@
-spark.sql("SELECT * FROM vw_exact_dups_plan").show(50, truncate=False)
-spark.sql("SELECT * FROM vw_amount_only_dups_plan").show(50, truncate=False)
+# ============================================================
+# FINAL GRANULAR BUILDER — Corrected Join Keys
+# ============================================================
+
+import pyspark.sql.functions as F
+from functools import reduce
+
+# -----------------------------
+# CONFIGURATION
+# -----------------------------
+RUN_BUILD       = True                  # ✅ set True after verifying duplicates
+FILTER_YEARS    = ["FY25"]
+FILTER_SCENARIO = None
+FILTER_VERSION  = None
+KEEP_ONLY_KPI   = True
+EBITDA_CODES    = []                    # add codes if needed
+OUTPUT_PATH     = "/lakehouse/default/Files/SQL_DUMPS/GRANULAR_FY25"
+
+# -----------------------------
+# LOAD DATA
+# -----------------------------
+actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
+plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
+forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
+
+account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")
+product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")
+
+# -----------------------------
+# HELPER FUNCTIONS
+# -----------------------------
+def cols_except(df, exclude):
+    ex = set(exclude)
+    return [c for c in df.columns if c not in ex]
+
+def find_duplicates(df, fact_name):
+    """Creates 2 views per fact: exact dupes and amount-only dupes."""
+    exact = (
+        df.groupBy(df.columns)
+          .count()
+          .filter(F.col("count") > 1)
+          .withColumn("FACT_SOURCE", F.lit(fact_name))
+    )
+    exact.createOrReplaceTempView(f"vw_exact_dups_{fact_name.lower()}")
+
+    key_cols = cols_except(df, ["Amount"])
+    amt_only = (
+        df.groupBy(key_cols)
+          .agg(
+              F.countDistinct("Amount").alias("amount_variants"),
+              F.sum("Amount").alias("summed_amount_for_key")
+          )
+          .filter(F.col("amount_variants") > 1)
+          .withColumn("FACT_SOURCE", F.lit(fact_name))
+    )
+    amt_only.createOrReplaceTempView(f"vw_amount_only_dups_{fact_name.lower()}")
+
+    print(f"[OK] Created duplicate views for {fact_name}")
+
+def dedupe_sum_amount(df):
+    key_cols = [c for c in df.columns if c != "Amount"]
+    return df.groupBy(key_cols).agg(F.sum("Amount").alias("Amount"))
+
+def contains_any(substr, qualified_cols):
+    expr = None
+    for qc in qualified_cols:
+        cexpr = F.upper(F.col(qc)).contains(substr)
+        expr = cexpr if expr is None else (expr | cexpr)
+    return expr if expr is not None else F.lit(False)
+
+# -----------------------------
+# MAIN BUILDER (correct join keys)
+# -----------------------------
+def build_granular(fact_df, fact_name, scenarios=None, years=None, versions=None):
+    # Deduplicate
+    d = dedupe_sum_amount(fact_df).alias("d")
+
+    # ✅ Corrected join keys
+    j = (
+        d.join(account_df.alias("ad"),  F.col("d.ACCOUNT")     == F.col("ad.Account"),      "left")
+         .join(product_df.alias("pd"),  F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"),  "left")
+         .join(costcenter_df.alias("cc"),F.col("d.COSTCENTER") == F.col("cc.Cost_Center"),  "left")
+    )
+
+    # Filters (SCENARIO/YEAR/VERSION)
+    conds = []
+    if scenarios: conds.append(F.col("d.SCENARIO").isin([*scenarios]))
+    if years:     conds.append(F.col("d.YEAR").isin([*years]))
+    if versions:  conds.append(F.col("d.VERSION").isin([*versions]))
+    if conds:
+        j = j.filter(reduce(lambda a,b: a & b, conds))
+
+    # KPI tagging
+    ad_cols = set(account_df.columns)
+    has_L4 = "L4" in ad_cols
+    has_L5 = "L5_Description" in ad_cols
+    has_acc = "Account" in ad_cols
+    has_desc = "Description" in ad_cols
+
+    revenue_expr = (F.col("ad.L5_Description") == "Revenue") if has_L5 \
+                   else contains_any("REVENUE", ["ad.Description"] if has_desc else [])
+    opex_expr    = (F.col("ad.L5_Description") == "Operating Expenses") if has_L5 \
+                   else contains_any("OPERATING EXPENSE", ["ad.Description"] if has_desc else [])
+    ebitda_expr  = ((F.col("ad.L4") == "EBITDA") if has_L4 else F.lit(False)) | \
+                   ((F.col("ad.Account").isin(EBITDA_CODES)) if (has_acc and EBITDA_CODES) else F.lit(False))
+
+    if KEEP_ONLY_KPI:
+        j = j.withColumn(
+            "KPI",
+            F.when(revenue_expr, "Revenue")
+             .when(opex_expr, "Operating Expenses")
+             .when(ebitda_expr, "EBITDA")
+        ).filter(F.col("KPI").isNotNull())
+    else:
+        j = j.withColumn("KPI", F.lit(None).cast("string"))
+
+    # Select with prefixes
+    fact_cols = [F.col(f"d.{c}").alias(c) for c in fact_df.columns]
+    acc_cols  = [F.col(f"ad.{c}").alias(f"acc_{c}") for c in account_df.columns]
+    prod_cols = [F.col(f"pd.{c}").alias(f"prod_{c}") for c in product_df.columns]
+    cc_cols   = [F.col(f"cc.{c}").alias(f"cc_{c}") for c in costcenter_df.columns]
+
+    return j.select(*(fact_cols + acc_cols + prod_cols + cc_cols)) \
+            .withColumn("FACT_SOURCE", F.lit(fact_name))
+
+# -----------------------------
+# STEP 1: DUPLICATES
+# -----------------------------
+find_duplicates(actual_df,   "ACTUALS")
+find_duplicates(plan_df,     "PLAN")
+find_duplicates(forecast_df, "FORECAST")
+
+if not RUN_BUILD:
+    print("[PAUSED] Inspect duplicates first using spark.sql('SELECT * FROM vw_exact_dups_plan').show()")
+else:
+    # -----------------------------
+    # STEP 2: DEDUPE + JOIN + UNION
+    # -----------------------------
+    gran_actual   = build_granular(actual_df,   "ACTUALS",
+                                   scenarios=FILTER_SCENARIO, years=FILTER_YEARS, versions=FILTER_VERSION)
+    gran_plan     = build_granular(plan_df,     "PLAN",
+                                   scenarios=FILTER_SCENARIO, years=FILTER_YEARS, versions=FILTER_VERSION)
+    gran_forecast = build_granular(forecast_df, "FORECAST",
+                                   scenarios=FILTER_SCENARIO, years=FILTER_YEARS, versions=FILTER_VERSION)
+
+    granular_all = (
+        gran_actual
+          .unionByName(gran_plan, allowMissingColumns=True)
+          .unionByName(gran_forecast, allowMissingColumns=True)
+    )
+
+    # Save final unified dataset
+    (
+        granular_all
+        .coalesce(1)
+        .write.mode("overwrite")
+        .format("delta")
+        .save(OUTPUT_PATH)
+    )
+    print(f"[OK] Unified file saved at: {OUTPUT_PATH}")
+
+    spark.read.format("delta").load(OUTPUT_PATH).createOrReplaceTempView("vw_granular_unified")
+    print("[INFO] Temp view 'vw_granular_unified' created for querying.")
