@@ -88,4 +88,109 @@ def build_granular(fact_df, fact_name, scenarios=None, years=None, versions=None
     granular = (
         d.join(costcenter_df.alias("cc"), F.col("d.COSTCENTER")  == F.col("cc.CostCenter"),  "left")
          .join(product_df.alias("pd"),   F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
-         .join(account_df.ali_
+         .join(account_df.alias("ad"),   F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
+    )
+
+    # 3) Filters (SCENARIO/YEAR/VERSION)
+    conds = []
+    if scenarios: conds.append(F.col("d.SCENARIO").isin([*scenarios]))
+    if years:     conds.append(F.col("d.YEAR").isin([*years]))       # e.g., ["FY25"]
+    if versions:  conds.append(F.col("d.VERSION").isin([*versions]))
+
+    if conds:
+        granular = granular.filter(reduce(lambda a, b: a & b, conds))
+
+    # 4) KPI tagging from account hierarchy
+    def contains_ebitda(colname):
+        return F.upper(F.col(colname)).contains("EBITDA")
+
+    kpi_expr = (
+        F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
+         .when(F.col("ad.L5_Description") == "Operating Expenses", "Operating Expenses")
+         .when(
+             (F.col("ad.L4") == "EBITDA") |
+             contains_ebitda("ad.L5_Description") |
+             contains_ebitda("ad.L6_Description") |
+             contains_ebitda("ad.L7_Description"),
+             "EBITDA"
+         )
+    )
+
+    granular = granular.withColumn("KPI", kpi_expr).filter(F.col("KPI").isNotNull())
+
+    # 5) Select all hierarchies + keys + measures + tags
+    granular = granular.select(
+        # Product hierarchy L3–L8
+        F.col("pd.L3_Description").alias("product_L3_Description"),
+        F.col("pd.L4_Description").alias("product_L4_Description"),
+        F.col("pd.L5_Description").alias("product_L5_Description"),
+        F.col("pd.L6_Description").alias("product_L6_Description"),
+        F.col("pd.L7_Description").alias("product_L7_Description"),
+        F.col("pd.L8_Description").alias("product_L8_Description"),
+
+        # Account hierarchy L4–L7
+        F.col("ad.L4").alias("account_L4"),
+        F.col("ad.L5_Description").alias("account_L5_Description"),
+        F.col("ad.L6_Description").alias("account_L6_Description"),
+        F.col("ad.L7_Description").alias("account_L7_Description"),
+
+        # Cost Center hierarchy L1–L4
+        F.col("cc.L1_Description").alias("cc_L1_Description"),
+        F.col("cc.L2_Description").alias("cc_L2_Description"),
+        F.col("cc.L3_Description").alias("cc_L3_Description"),
+        F.col("cc.L4_Description").alias("cc_L4_Description"),
+
+        # Business keys / attributes (keep originals)
+        F.col("d.ACCOUNT"), F.col("d.PRODUCTLINE"), F.col("d.COSTCENTER"),
+        F.col("d.ENTITY"), F.col("d.CUSTOMER"), F.col("d.CURRENCY"),
+        F.col("d.DATASOURCE"), F.col("d.DATE"),
+        F.col("d.SCENARIO"), F.col("d.VERSION"), F.col("d.YEAR"),
+
+        # Measures
+        F.col("d.Amount"),
+
+        # KPI & fact label
+        F.col("KPI"),
+        F.lit(fact_name).alias("FACT_SOURCE")
+    )
+
+    return granular
+
+# =========================
+# Build granular per fact
+# (For now, only filter YEAR="FY25" as requested)
+# =========================
+gran_actual   = build_granular(actual_df,   "ACTUALS",  years=["FY25"])
+gran_plan     = build_granular(plan_df,     "PLAN",     years=["FY25"])
+gran_forecast = build_granular(forecast_df, "FORECAST", years=["FY25"])
+
+# =========================
+# Union into one granular dataset
+# =========================
+granular_all = (
+    gran_actual
+      .unionByName(gran_plan, allowMissingColumns=True)
+      .unionByName(gran_forecast, allowMissingColumns=True)
+)
+
+# =========================
+# Persist to a distinct table
+# =========================
+spark.sql("CREATE DATABASE IF NOT EXISTS FPNA_FISRPT_GOLD")
+
+# Choose a distinct, descriptive name (you asked for something different)
+target_table = "FPNA_FISRPT_GOLD.dbo.GRANULAR_KPI_FY25_ALL"
+
+# Write as Delta table (or swap to parquet if that’s your standard)
+(granular_all
+ .write
+ .mode("overwrite")
+ .format("delta")       # change to "parquet" if preferred
+ .saveAsTable(target_table)
+)
+
+print(f"Written unified granular table to {target_table}")
+
+# (Optional) If you also want external files instead of a managed table:
+# output_path = "abfss://<container>@<storage-account>.dfs.core.windows.net/gold/granular_kpi_fy25_all"
+# (granular_all.write.mode("overwrite").parquet(output_path))
