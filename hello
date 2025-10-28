@@ -1,166 +1,193 @@
-from pyspark.sql import functions as F
+# --- Imports
+import pyspark.sql.functions as F
 from pyspark.sql import Window
 
-def moving_avg_anomaly(
-    df,
-    entity_cols,            # list[str] -> dimensions to group by (e.g. ["account"] or ["country","state","sku"])
-    date_col,               # str       -> date column name
-    value_col,              # str       -> metric column name (numeric)
-    kpi_name,               # str       -> e.g. "Revenue"
-    aan_level,              # str       -> e.g. "org-**-sku" or "org-account"
-    window_size=3,          # int       -> rolling window size (includes current row)
-    min_points=3,           # int       -> need at least this many deviations to compute threshold
-    k=2.0                   # float     -> threshold multiplier (mean_dev + k * sd_dev)
-):
+# --- Load facts & dims (as in your notebook)
+actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
+plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
+forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
+
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")   # cc.*
+product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")       # pd.*
+account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")       # ad.*
+
+# ---------- Helper: list of columns except a few ----------
+def cols_except(df, exclude):
+    ex = set(exclude)
+    return [c for c in df.columns if c not in ex]
+
+# ---------- Step A: DUPLICATE SURFACING (no changes yet) ----------
+def find_duplicates(df, fact_name):
     """
-    Returns:
-      result_df        -> per entity x date with totals, moving_avg, deviations, threshold, is_anomaly
-      anomaly_report   -> AAN-formatted table requested
+    Returns two DFs:
+      1) exact_dups  : rows where *all* columns match and appear >1 time
+      2) amount_only : groups where all non-Amount columns match but Amount differs.
+                       Includes summed Amount and counts for inspection.
     """
-
-    # --- 0) Sanitise types (safe casts) ---
-    base = (
-        df
-        .withColumn(date_col, F.to_date(F.col(date_col)))
-        .withColumn(value_col, F.col(value_col).cast("double"))
+    # 1) Exact duplicates (all columns)
+    exact_dups = (
+        df.groupBy(df.columns)
+          .count()
+          .filter(F.col("count") > 1)
+          .withColumn("FACT_SOURCE", F.lit(fact_name))
     )
 
-    # --- 1) Aggregate to entity x date (sum) ---
-    group_cols = [F.col(c) for c in entity_cols] + [F.col(date_col)]
-    agg_df = (
-        base
-        .groupBy(*([c for c in entity_cols] + [date_col]))
-        .agg(F.sum(value_col).alias("total_value"))
+    # 2) "Only Amount differs" detection
+    key_cols = cols_except(df, ["Amount"])
+    amount_only = (
+        df.groupBy(key_cols)
+          .agg(
+              F.count(F.lit(1)).alias("row_count"),
+              F.countDistinct("Amount").alias("amount_variants"),
+              F.sum("Amount").alias("summed_amount_for_key")
+          )
+          .filter(F.col("amount_variants") > 1)
+          .withColumn("FACT_SOURCE", F.lit(fact_name))
+    )
+    return exact_dups, amount_only
+
+# Run duplicate surfacing for visibility (inspect before proceeding)
+actual_exact_dups,   actual_amount_only   = find_duplicates(actual_df,   "ACTUALS")
+plan_exact_dups,     plan_amount_only     = find_duplicates(plan_df,     "PLAN")
+forecast_exact_dups, forecast_amount_only = find_duplicates(forecast_df, "FORECAST")
+
+# Materialize to temp views so you can open & review quickly in Synapse
+actual_exact_dups.createOrReplaceTempView("vw_exact_dups_actuals")
+plan_exact_dups.createOrReplaceTempView("vw_exact_dups_plan")
+forecast_exact_dups.createOrReplaceTempView("vw_exact_dups_forecast")
+
+actual_amount_only.createOrReplaceTempView("vw_amount_only_dups_actuals")
+plan_amount_only.createOrReplaceTempView("vw_amount_only_dups_plan")
+forecast_amount_only.createOrReplaceTempView("vw_amount_only_dups_forecast")
+
+# Example: spark.sql("SELECT * FROM vw_amount_only_dups_plan ORDER BY row_count DESC").show(50, False)
+
+
+# ---------- Step B: CANONICAL DEDUPE (apply your rule) ----------
+def dedupe_sum_amount(df):
+    """
+    Collapses identical records. If only Amount differs, it sums Amount.
+    (Group by all columns EXCEPT Amount; aggregate sum(Amount) as Amount)
+    """
+    key_cols = cols_except(df, ["Amount"])
+    return (
+        df.groupBy(key_cols)
+          .agg(F.sum("Amount").alias("Amount"))
     )
 
-    # --- 2) Rolling window per entity ---
-    w = (
-        Window
-        .partitionBy(*entity_cols)
-        .orderBy(F.col(date_col))
-        .rowsBetween(-(window_size-1), 0)     # include current + previous window_size-1 rows
+# ---------- Step C: Enrichment + KPI filter + Scenario/Year/Version filter ----------
+def build_granular(fact_df, fact_name,
+                   scenarios=None, years=None, versions=None):
+    """
+    1) Dedupes fact (sum Amount when only Amount differs)
+    2) Joins dims (left) and retains all hierarchy levels
+    3) Applies SCENARIO/YEAR/VERSION filters (if lists provided)
+    4) Keeps only KPIs: Revenue, Operating Expenses, EBITDA
+    5) Adds FACT_SOURCE tag
+    """
+    # 1) Dedup
+    fact_clean = dedupe_sum_amount(fact_df)
+
+    # 2) Join to dims
+    d = fact_clean.alias("d")
+    cc = costcenter_df.alias("cc")
+    pd = product_df.alias("pd")
+    ad = account_df.alias("ad")
+
+    granular = (
+        d.join(cc, F.col("d.COSTCENTER")  == F.col("cc.CostCenter"),  "left")
+         .join(pd, F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
+         .join(ad, F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
     )
 
-    # moving average
-    dev_df = (
-        agg_df
-        .withColumn("moving_avg", F.avg("total_value").over(w))
-        # signed % deviation; avoid div/0 and null MA
-        .withColumn(
-            "pct_dev_from_ma",
-            F.when((F.col("moving_avg").isNull()) | (F.col("moving_avg") == 0), F.lit(None))
-             .otherwise((F.col("total_value") - F.col("moving_avg")) / F.col("moving_avg"))
-        )
+    # 3) Scenario/Year/Version filters (lists allowed)
+    conds = []
+    if scenarios: conds.append(F.col("d.SCENARIO").isin([*scenarios]))
+    if years:     conds.append(F.col("d.YEAR").isin([*years]))          # e.g., ["FY25"]
+    if versions:  conds.append(F.col("d.VERSION").isin([*versions]))
+
+    if conds:
+        granular = granular.filter(F.reduce(lambda a, b: a & b, conds))
+
+    # 4) KPI flag based on account hierarchy:
+    #    Revenue & OpEx via L5_Description; EBITDA when any level’s description contains "EBITDA"
+    def contains_ebitda(col):
+        return F.upper(F.col(col)).contains("EBITDA")
+
+    kpi_expr = (
+        F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
+         .when(F.col("ad.L5_Description") == "Operating Expenses", "Operating Expenses")
+         .when(contains_ebitda("ad.L5_Description") | contains_ebitda("ad.L6_Description") | contains_ebitda("ad.L7_Description") | (F.col("ad.L4") == "EBITDA"),
+               "EBITDA")
     )
 
-    # --- 3) Per-entity deviation statistics for dynamic threshold ---
-    stats_by_entity = (
-        dev_df
-        .groupBy(*entity_cols)
-        .agg(
-            F.mean("pct_dev_from_ma").alias("mean_dev"),
-            F.stddev("pct_dev_from_ma").alias("sd_dev"),
-            F.count(F.col("pct_dev_from_ma")).alias("n_dev")
-        )
+    granular = granular.withColumn("KPI", kpi_expr).filter(F.col("KPI").isNotNull())
+
+    # 5) Select all hierarchies + core fact fields + tag
+    granular = granular.select(
+        # Product hierarchy L3–L8
+        F.col("pd.L3_Description").alias("product_L3_Description"),
+        F.col("pd.L4_Description").alias("product_L4_Description"),
+        F.col("pd.L5_Description").alias("product_L5_Description"),
+        F.col("pd.L6_Description").alias("product_L6_Description"),
+        F.col("pd.L7_Description").alias("product_L7_Description"),
+        F.col("pd.L8_Description").alias("product_L8_Description"),
+
+        # Account hierarchy L4–L7
+        F.col("ad.L4").alias("account_L4"),
+        F.col("ad.L5_Description").alias("account_L5_Description"),
+        F.col("ad.L6_Description").alias("account_L6_Description"),
+        F.col("ad.L7_Description").alias("account_L7_Description"),
+
+        # Cost Center hierarchy L1–L4
+        F.col("cc.L1_Description").alias("cc_L1_Description"),
+        F.col("cc.L2_Description").alias("cc_L2_Description"),
+        F.col("cc.L3_Description").alias("cc_L3_Description"),
+        F.col("cc.L4_Description").alias("cc_L4_Description"),
+
+        # Business keys / attributes (keep originals)
+        F.col("d.ACCOUNT"), F.col("d.PRODUCTLINE"), F.col("d.COSTCENTER"),
+        F.col("d.ENTITY"), F.col("d.CUSTOMER"), F.col("d.CURRENCY"),
+        F.col("d.DATASOURCE"), F.col("d.DATE"),
+        F.col("d.SCENARIO"), F.col("d.VERSION"), F.col("d.YEAR"),
+
+        # Measures
+        F.col("d.Amount"),
+
+        # KPI & fact source
+        F.col("KPI"),
+        F.lit(fact_name).alias("FACT_SOURCE")
     )
 
-    # --- 4) Join stats and decide anomalies (dynamic threshold per entity) ---
-    result_df = (
-        dev_df
-        .join(stats_by_entity, on=entity_cols, how="left")
-        .withColumn(
-            "dyn_threshold",
-            F.when(F.col("n_dev") >= F.lit(min_points),
-                   F.col("mean_dev") + F.lit(k) * F.col("sd_dev"))
-             .otherwise(F.lit(None))
-        )
-        .withColumn(
-            "is_anomaly",
-            F.when(F.col("dyn_threshold").isNull(), F.lit(False))
-             .otherwise(F.abs(F.col("pct_dev_from_ma")) > F.abs(F.col("dyn_threshold")))
-        )
-        .orderBy(*entity_cols, date_col)
-    )
+    return granular
 
-    # --- 5) Build AAN-formatted Anomaly Report (only anomalies) ---
-    # Compose a full dimension path for aan/aan_value (entity key)
-    entity_key = F.concat_ws("||", *[F.col(c).cast("string") for c in entity_cols])
+# ---------- Step D: Build granular per fact for FY25 + chosen scenarios/versions ----------
+# Per your inputs:
+#   - Filter YEAR="FY25"
+#   - You may pass scenario(s)/version(s) lists you want; example below shows common pairs.
+gran_actual  = build_granular(actual_df,  "ACTUALS",  years=["FY25"])
+gran_plan    = build_granular(plan_df,    "PLAN",     years=["FY25"])
+gran_forecast= build_granular(forecast_df,"FORECAST", years=["FY25"])
 
-    anomaly_report = (
-        result_df
-        .filter(F.col("is_anomaly") == True)
-        .withColumn("aan", F.concat_ws("_", F.lit(kpi_name), entity_key))
-        .withColumn("aan_date", F.current_date())
-        .withColumn("predictive_date", F.col(date_col))
-        .withColumn("aan_level", F.lit(aan_level))
-        # % deviation as text (signed); keep 2 decimals with sign
-        .withColumn("aan_delta_num", (F.col("pct_dev_from_ma") * 100.0))
-        .withColumn("aan_delta",
-                    F.format_string("%+.2f%%", F.col("aan_delta_num")))
-        .withColumn("aan_attr", F.col("moving_avg"))  # baseline
-        .withColumn(
-            "aan_ranking",
-            F.row_number().over(Window.orderBy(F.abs(F.col("pct_dev_from_ma")).desc())).cast("string")
-        )
-        .withColumn(
-            "inference",
-            F.concat(
-                F.lit(kpi_name), F.lit(" for "),
-                entity_key, F.lit(" on "),
-                F.date_format(F.col(date_col), "yyyy-MM-dd"),
-                F.lit(" deviated by "),
-                F.format_string("%+.2f%%", F.col("aan_delta_num")),
-                F.lit(" vs baseline "),
-                F.format_number(F.col("moving_avg"), 2)
-            )
-        )
-        .withColumn("aan_name", F.lit(kpi_name))
-        .withColumn("aan_value", entity_key)
-        .withColumn(
-            "anomaly_id",
-            F.concat_ws(
-                "_",
-                F.date_format(F.col(date_col), "yyyyMMdd"),
-                entity_key,
-                F.lit(kpi_name)
-            )
-        )
-        .select(
-            "aan", "aan_date", "predictive_date", "aan_level",
-            "aan_delta", "aan_attr", "aan_ranking", "inference",
-            "aan_name", "aan_value", "anomaly_id"
-        )
-    )
+# ---------- Step E: One unified granular file ----------
+granular_all = gran_actual.unionByName(gran_plan, allowMissingColumns=True) \
+                          .unionByName(gran_forecast, allowMissingColumns=True)
 
-    return result_df, anomaly_report
+# Optionally, persist as a GOLD table (unique name as requested)
+spark.sql("CREATE DATABASE IF NOT EXISTS FPNA_FISRPT_GOLD")
+target_table = "FPNA_FISRPT_GOLD.dbo.GRANULAR_KPI_FY25_ALL"
+# If you want to overwrite each run:
+(granular_all
+ .write
+ .mode("overwrite")
+ .format("delta")           # or "parquet" depending on your lake standard
+ .saveAsTable(target_table))
 
+print(f"Written unified granular table to {target_table}")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-# result_df must come from a DF already filtered to revenue accounts, or pass the raw 'actuals' if that's fine
-result_df, anomaly_report = moving_avg_anomaly(
-    df=revenue_df,                 # your filtered dataset
-    entity_cols=["account"],       # dimensions
-    date_col="DATE",
-    value_col="Amount",            # or "total_amount" if you've pre-aggregated
-    kpi_name="Revenue",
-    aan_level="org-account",
-    window_size=3,
-    min_points=3,
-    k=2.0
-)
-
-# See outputs
-result_df.show(10, truncate=False)
-anomaly_report.show(10, truncate=False)
+# Also expose duplicate views (already created) so you can inspect before/after.
+# If you want, write the duplicates into audit tables:
+# actual_exact_dups.write.mode("overwrite").saveAsTable("FPNA_FISRPT_GOLD.dbo.audit_exact_dups_actuals")
+# plan_exact_dups.write.mode("overwrite").saveAsTable("FPNA_FISRPT_GOLD.dbo.audit_exact_dups_plan")
+# forecast_exact_dups.write.mode("overwrite").saveAsTable("FPNA_FISRPT_GOLD.dbo.audit_exact_dups_forecast")
+# ...and similarly for *_amount_only
