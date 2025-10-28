@@ -5,15 +5,24 @@ import pyspark.sql.functions as F
 from functools import reduce
 
 # =========================
+# Config (toggle as needed)
+# =========================
+KEEP_ONLY_KPI = True          # set False to keep all accounts (no KPI filter)
+FILTER_YEARS  = ["FY25"]      # or [] / None to disable year filter
+FILTER_SCEN   = None          # e.g., ["PLAN","F7_5"] or None
+FILTER_VER    = None          # e.g., ["Final","At_Plan_Rates"] or None
+TARGET_TABLE  = "FPNA_FISRPT_GOLD.dbo.GRANULAR_UNIFIED"
+
+# =========================
 # Load facts & dimensions
 # =========================
 actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
 plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
 forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
 
-costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center").alias("cc")
-product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product").alias("pd")
-account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account").alias("ad")
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center").alias("cc")   # L1..L4
+product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product").alias("pd")       # levels+Description
+account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account").alias("ad")       # L1..L5 (+Description)
 
 # =========================
 # Helpers
@@ -23,7 +32,7 @@ def cols_except(df, exclude):
     return [c for c in df.columns if c not in ex]
 
 def find_duplicates(df, fact_name):
-    """1) Exact dupes across all columns; 2) groups where only Amount differs."""
+    """1) exact dupes across ALL columns; 2) groups where only Amount differs."""
     exact_dups = (
         df.groupBy(df.columns).count()
           .filter(F.col("count") > 1)
@@ -43,114 +52,133 @@ def find_duplicates(df, fact_name):
     return exact_dups, amount_only
 
 def dedupe_sum_amount(df):
-    """Collapse records; if only Amount differs, sum Amount."""
+    """Collapse identical records; if only Amount differs, sum it."""
     key_cols = cols_except(df, ["Amount"])
     return df.groupBy(key_cols).agg(F.sum("Amount").alias("Amount"))
 
-# Convenience for safe qualified selects
-def select_if_exists(dim_cols, alias, wanted, prefix):
-    """
-    dim_cols: list of columns present in the dimension table (e.g., account_df.columns)
-    alias   : 'ad' / 'pd' / 'cc'
-    wanted  : ordered list of candidate column names to try selecting
-    prefix  : prefix for output alias (e.g., 'account_', 'product_', 'cc_')
-    Returns list[Column] that exist, each renamed to prefix+originalName
-    """
-    sels = []
-    have = set(dim_cols)
-    for colname in wanted:
-        if colname in have:
-            sels.append(F.col(f"{alias}.{colname}").alias(prefix + colname))
-    return sels
+def first_existing(colnames, available):
+    for c in colnames:
+        if c in available:
+            return c
+    return None
+
+def contains_any(substr, qualified_cols):
+    expr = None
+    for qc in qualified_cols:
+        cexpr = F.upper(F.col(qc)).contains(substr)
+        expr = cexpr if expr is None else (expr | cexpr)
+    return expr if expr is not None else F.lit(False)
 
 # =========================
-# Build granular (schema-safe, fully-qualified)
+# Core builder (schema-safe, fully-qualified)
 # =========================
-def build_granular(fact_df, fact_name, scenarios=None, years=None, versions=None):
-    # 1) Dedupe fact
+def build_granular(fact_df, fact_label, scenarios=None, years=None, versions=None):
+    # 1) Dedup fact per rule (sum Amount when only Amount differs)
     d = dedupe_sum_amount(fact_df).alias("d")
 
-    # 2) Join dims (keep aliases alive for qualified references)
+    # 2) Join dims
     g = (
         d.join(costcenter_df, F.col("d.COSTCENTER")  == F.col("cc.CostCenter"),  "left")
          .join(product_df,    F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
          .join(account_df,    F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
     )
 
-    # 3) Front-end filters
+    # 3) Front-end style filters
     conds = []
     if scenarios: conds.append(F.col("d.SCENARIO").isin([*scenarios]))
-    if years:     conds.append(F.col("d.YEAR").isin([*years]))     # e.g., ["FY25"]
+    if years:     conds.append(F.col("d.YEAR").isin([*years]))
     if versions:  conds.append(F.col("d.VERSION").isin([*versions]))
     if conds:
         g = g.filter(reduce(lambda a, b: a & b, conds))
 
-    # 4) KPI tagging (qualified, with fallbacks)
-    acct_cols = set(account_df.columns)  # check against dimension schema, not joined df
+    # 4) KPI tagging (if enabled) — robust to schema
+    if KEEP_ONLY_KPI:
+        acct_cols = set(account_df.columns)
+        has_L4      = "L4" in acct_cols
+        has_L5_desc = "L5_Description" in acct_cols
+        has_L6_desc = "L6_Description" in acct_cols
+        has_L7_desc = "L7_Description" in acct_cols
+        has_desc    = "Description" in acct_cols
 
-    # Preferred fields if present
-    has_L4          = "L4" in acct_cols
-    has_L5_desc     = "L5_Description" in acct_cols
-    has_L6_desc     = "L6_Description" in acct_cols
-    has_L7_desc     = "L7_Description" in acct_cols
-    has_desc        = "Description" in acct_cols
-
-    def contains_any(substr, qualified_cols):
-        expr = None
-        for qc in qualified_cols:
-            cexpr = F.upper(F.col(qc)).contains(substr)
-            expr = cexpr if expr is None else (expr | cexpr)
-        return expr if expr is not None else F.lit(False)
-
-    revenue_expr = (
-        (F.col("ad.L5_Description") == "Revenue") if has_L5_desc
-        else contains_any("REVENUE", ["ad.Description"] if has_desc else [])
-    )
-    opex_expr = (
-        (F.col("ad.L5_Description") == "Operating Expenses") if has_L5_desc
-        else contains_any("OPERATING EXPENSE", ["ad.Description"] if has_desc else [])
-    )
-    ebitda_expr = (
-        (F.col("ad.L4") == "EBITDA") if has_L4
-        else contains_any(
-            "EBITDA",
-            [c for c, ok in [
-                ("ad.L5_Description", has_L5_desc),
-                ("ad.L6_Description", has_L6_desc),
-                ("ad.L7_Description", has_L7_desc),
-                ("ad.Description",    has_desc),
-            ] if ok]
+        revenue_expr = (
+            (F.col("ad.L5_Description") == "Revenue") if has_L5_desc
+            else contains_any("REVENUE", ["ad.Description"] if has_desc else [])
         )
-    )
+        opex_expr = (
+            (F.col("ad.L5_Description") == "Operating Expenses") if has_L5_desc
+            else contains_any("OPERATING EXPENSE", ["ad.Description"] if has_desc else [])
+        )
+        ebitda_expr = (
+            (F.col("ad.L4") == "EBITDA") if has_L4
+            else contains_any(
+                "EBITDA",
+                [c for c, ok in [
+                    ("ad.L5_Description", has_L5_desc),
+                    ("ad.L6_Description", has_L6_desc),
+                    ("ad.L7_Description", has_L7_desc),
+                    ("ad.Description",    has_desc),
+                ] if ok]
+            )
+        )
 
-    g = g.withColumn(
-        "KPI",
-        F.when(revenue_expr, "Revenue")
-         .when(opex_expr, "Operating Expenses")
-         .when(ebitda_expr, "EBITDA")
-    ).filter(F.col("KPI").isNotNull())
+        g = g.withColumn(
+            "KPI",
+            F.when(revenue_expr, "Revenue")
+             .when(opex_expr, "Operating Expenses")
+             .when(ebitda_expr, "EBITDA")
+        ).filter(F.col("KPI").isNotNull())
+    else:
+        g = g.withColumn("KPI", F.lit(None).cast("string"))
 
-    # 5) Safe, qualified selection of hierarchies (no ambiguity)
-    product_wanted = [
-        "Description","L1","L1_Description","L2","L2_Description",
-        "L3_Description","L4_Description","L5_Description","L6_Description",
-        "L7_Description","L8_Description"
+    # 5) Safe select of hierarchies (no ambiguous names; keep all levels that exist)
+    pd_cols = set(product_df.columns)
+    ad_cols = set(account_df.columns)
+    cc_cols = set(costcenter_df.columns)
+
+    def safe(alias, base, out_alias):
+        # base is unqualified (e.g., 'L3_Description'); we always qualify on output
+        has = (base in (pd_cols if alias=="pd" else ad_cols if alias=="ad" else cc_cols))
+        return (F.col(f"{alias}.{base}").alias(out_alias)) if has else F.lit(None).alias(out_alias)
+
+    # Product levels (include what exists; common columns shown)
+    product_selects = [
+        safe("pd","Description","product_Description"),
+        safe("pd","L1","product_L1"),
+        safe("pd","L1_Description","product_L1_Description"),
+        safe("pd","L2","product_L2"),
+        safe("pd","L2_Description","product_L2_Description"),
+        safe("pd","L3_Description","product_L3_Description"),
+        safe("pd","L4_Description","product_L4_Description"),
+        safe("pd","L5_Description","product_L5_Description"),
+        safe("pd","L6_Description","product_L6_Description"),
+        safe("pd","L7_Description","product_L7_Description"),
+        safe("pd","L8_Description","product_L8_Description"),
     ]
-    account_wanted = [
-        "Account","Description","L1","L2","L3","L4",
-        "L5_Description","L6_Description","L7_Description"
-    ]
-    cc_wanted = [
-        "CC_Description","L1_Description","L2_Description","L3_Description","L4_Description"
+
+    # Account levels (L1..L5 + descriptions)
+    account_selects = [
+        safe("ad","Account","account_Code"),
+        safe("ad","Description","account_Description"),
+        safe("ad","L1","account_L1"),
+        safe("ad","L2","account_L2"),
+        safe("ad","L3","account_L3"),
+        safe("ad","L4","account_L4"),
+        safe("ad","L5_Description","account_L5_Description"),
+        safe("ad","L6_Description","account_L6_Description"),
+        safe("ad","L7_Description","account_L7_Description"),
     ]
 
-    select_exprs = []
-    select_exprs += select_if_exists(product_df.columns, "pd", product_wanted, "product_")
-    select_exprs += select_if_exists(account_df.columns, "ad", account_wanted, "account_")
-    select_exprs += select_if_exists(costcenter_df.columns, "cc", cc_wanted, "cc_")
+    # Cost center levels (L1..L4 + description)
+    cc_selects = [
+        safe("cc","CC_Description","cc_Description"),
+        safe("cc","L1_Description","cc_L1_Description"),
+        safe("cc","L2_Description","cc_L2_Description"),
+        safe("cc","L3_Description","cc_L3_Description"),
+        safe("cc","L4_Description","cc_L4_Description"),
+    ]
 
-    # Core fact keys/attrs/measures (qualified from 'd.')
-    select_exprs += [
+    # Fact keys/attributes (fully qualified)
+    fact_selects = [
         F.col("d.ACCOUNT").alias("fact_ACCOUNT"),
         F.col("d.PRODUCTLINE").alias("fact_PRODUCTLINE"),
         F.col("d.COSTCENTER").alias("fact_COSTCENTER"),
@@ -158,41 +186,43 @@ def build_granular(fact_df, fact_name, scenarios=None, years=None, versions=None
         F.col("d.CUSTOMER").alias("fact_CUSTOMER"),
         F.col("d.CURRENCY").alias("fact_CURRENCY"),
         F.col("d.DATASOURCE").alias("fact_DATASOURCE"),
+        F.col("d.ICP").alias("fact_ICP") if "ICP" in d.columns else F.lit(None).alias("fact_ICP"),
         F.col("d.DATE").alias("fact_DATE"),
+        F.col("d.PERIOD").alias("fact_PERIOD") if "PERIOD" in d.columns else F.lit(None).alias("fact_PERIOD"),
         F.col("d.SCENARIO").alias("fact_SCENARIO"),
         F.col("d.VERSION").alias("fact_VERSION"),
         F.col("d.YEAR").alias("fact_YEAR"),
         F.col("d.Amount").alias("Amount"),
         F.col("KPI"),
-        F.lit(fact_name).alias("FACT_SOURCE"),
+        F.lit(fact_label).alias("FACT_SOURCE"),
     ]
 
-    g = g.select(*select_exprs)
+    g = g.select(*(product_selects + account_selects + cc_selects + fact_selects))
     return g
 
 # =========================
-# Duplicate surfacing views (optional to inspect)
+# Duplicate surfacing (optional to review)
 # =========================
-actual_exact_dups,   actual_amount_only   = find_duplicates(actual_df,   "ACTUALS")
-plan_exact_dups,     plan_amount_only     = find_duplicates(plan_df,     "PLAN")
-forecast_exact_dups, forecast_amount_only = find_duplicates(forecast_df, "FORECAST")
+act_exact, act_amt = find_duplicates(actual_df,   "ACTUALS")
+pln_exact, pln_amt = find_duplicates(plan_df,     "PLAN")
+fc_exact,  fc_amt  = find_duplicates(forecast_df, "FORECAST")
 
-actual_exact_dups.createOrReplaceTempView("vw_exact_dups_actuals")
-plan_exact_dups.createOrReplaceTempView("vw_exact_dups_plan")
-forecast_exact_dups.createOrReplaceTempView("vw_exact_dups_forecast")
-actual_amount_only.createOrReplaceTempView("vw_amount_only_dups_actuals")
-plan_amount_only.createOrReplaceTempView("vw_amount_only_dups_plan")
-forecast_amount_only.createOrReplaceTempView("vw_amount_only_dups_forecast")
-
-# =========================
-# Build granular per fact (FY25)
-# =========================
-gran_actual   = build_granular(actual_df,   "ACTUALS",  years=["FY25"])
-gran_plan     = build_granular(plan_df,     "PLAN",     years=["FY25"])
-gran_forecast = build_granular(forecast_df, "FORECAST", years=["FY25"])
+act_exact.createOrReplaceTempView("vw_exact_dups_actuals")
+pln_exact.createOrReplaceTempView("vw_exact_dups_plan")
+fc_exact.createOrReplaceTempView("vw_exact_dups_forecast")
+act_amt.createOrReplaceTempView("vw_amount_only_dups_actuals")
+pln_amt.createOrReplaceTempView("vw_amount_only_dups_plan")
+fc_amt.createOrReplaceTempView("vw_amount_only_dups_forecast")
 
 # =========================
-# Union into one dataset
+# Build per fact (apply front-end filters you set above)
+# =========================
+gran_actual   = build_granular(actual_df,   "ACTUALS",  scenarios=FILTER_SCEN, years=FILTER_YEARS, versions=FILTER_VER)
+gran_plan     = build_granular(plan_df,     "PLAN",     scenarios=FILTER_SCEN, years=FILTER_YEARS, versions=FILTER_VER)
+gran_forecast = build_granular(forecast_df, "FORECAST", scenarios=FILTER_SCEN, years=FILTER_YEARS, versions=FILTER_VER)
+
+# =========================
+# Union into one granular dataset
 # =========================
 granular_all = (
     gran_actual
@@ -201,16 +231,14 @@ granular_all = (
 )
 
 # =========================
-# Persist
+# Persist (Delta)
 # =========================
 spark.sql("CREATE DATABASE IF NOT EXISTS FPNA_FISRPT_GOLD")
-target_table = "FPNA_FISRPT_GOLD.dbo.GRANULAR_KPI_FY25_ALL"
-
 (granular_all
  .write
  .mode("overwrite")
- .format("delta")   # change to "parquet" if that's your standard
- .saveAsTable(target_table)
+ .format("delta")
+ .saveAsTable(TARGET_TABLE)
 )
 
-print(f"Written unified granular table to {target_table}")
+print(f"[OK] Granular unified table written to: {TARGET_TABLE}")
