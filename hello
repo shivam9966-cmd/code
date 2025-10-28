@@ -1,113 +1,109 @@
 # ============================================================
-# FINAL SCRIPT — Filter + Dedup + Concatenate + Save
-# (No default FY25 filter)
+# Concatenate Facts + Join Dimensions (Hierarchy-Enabled File)
 # ============================================================
 
 import pyspark.sql.functions as F
 from functools import reduce
 
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
-TARGET_PATH = "/lakehouse/default/Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_FILTERED"
-OUTPUT_FORMAT = "parquet"          # or "delta" / "csv"
-COALESCE_SINGLE_FILE = True        # single file output for easy export
-ADD_FACT_SOURCE = True             # adds column to track origin table (Actual/Plan/Forecast)
+# ------------ CONFIG ------------
+TARGET_PATH = "/lakehouse/default/Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED"  # output folder
+OUTPUT_FORMAT = "parquet"           # "parquet" | "delta" | "csv"
+COALESCE_SINGLE_FILE = True         # set True for a single output part file
 
-# -----------------------------
-# FRONT-END FILTER PLACEHOLDER
-# -----------------------------
-# You can later populate this dict from Power BI, front-end, or pipeline variables
-# Keep all None for now → includes everything (no filter)
+# Optional: front-end style filters (leave as None for no filtering)
 filter_dict = {
-    "YEAR": None,          # e.g. ["FY25"]
-    "SCENARIO": None,      # e.g. ["PLAN", "FORECAST"]
-    "VERSION": None,       # e.g. ["Final"]
-    "ENTITY": None         # optional, add more keys as needed
+    "YEAR": None,        # e.g. ["FY25"]
+    "SCENARIO": None,    # e.g. ["PLAN","FORECAST"]
+    "VERSION": None,     # e.g. ["Final"]
+    # add more keys if you want (e.g. "ENTITY": ["India"])
 }
 
 def apply_filters(df):
     conds = []
     for col, vals in filter_dict.items():
-        if vals:  # only apply if a list of filter values is provided
+        if vals:
             conds.append(F.col(col).isin(vals))
-    if conds:
-        return df.filter(reduce(lambda a,b: a & b, conds))
-    return df
+    return df.filter(reduce(lambda a,b: a & b, conds)) if conds else df
 
-# -----------------------------
-# LOAD FACT TABLES
-# -----------------------------
+# ------------ LOAD TABLES ------------
 actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
 plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
 forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
 
-# Apply front-end filters (currently no filters active)
+account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")      # key: Account
+product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")      # key: ProductLine
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")  # key: Cost_Center
+
+# ------------ FILTER FACTS (optional) ------------
 actual_df   = apply_filters(actual_df)
 plan_df     = apply_filters(plan_df)
 forecast_df = apply_filters(forecast_df)
 
-# -----------------------------
-# DEDUPE LOGIC
-# -----------------------------
+# ------------ DEDUPE (per your rule) ------------
 def find_amount_col(df):
     for c in df.columns:
         if c.lower() == "amount":
             return c
-    raise ValueError("No Amount column found (case-insensitive) in dataframe.")
+    raise ValueError("No 'Amount' column found (case-insensitive).")
 
 def dedupe_sum_amount(df):
-    amt_col = find_amount_col(df)
-    key_cols = [c for c in df.columns if c != amt_col]
-    return df.groupBy(key_cols).agg(F.sum(F.col(amt_col)).alias(amt_col))
+    amt = find_amount_col(df)
+    keys = [c for c in df.columns if c != amt]
+    return df.groupBy(keys).agg(F.sum(F.col(amt)).alias(amt))
 
-# Deduplicate each fact
-actual_d   = dedupe_sum_amount(actual_df)
-plan_d     = dedupe_sum_amount(plan_df)
-forecast_d = dedupe_sum_amount(forecast_df)
+actual_d    = dedupe_sum_amount(actual_df).withColumn("FACT_SOURCE", F.lit("ACTUALS"))
+plan_d      = dedupe_sum_amount(plan_df).withColumn("FACT_SOURCE", F.lit("PLAN"))
+forecast_d  = dedupe_sum_amount(forecast_df).withColumn("FACT_SOURCE", F.lit("FORECAST"))
 
-# Add FACT_SOURCE column if desired
-if ADD_FACT_SOURCE:
-    actual_d   = actual_d.withColumn("FACT_SOURCE", F.lit("ACTUALS"))
-    plan_d     = plan_d.withColumn("FACT_SOURCE", F.lit("PLAN"))
-    forecast_d = forecast_d.withColumn("FACT_SOURCE", F.lit("FORECAST"))
-
-# -----------------------------
-# ALIGN SCHEMAS BY COLUMN NAME
-# -----------------------------
+# ------------ ALIGN BY COLUMN NAME & CONCATENATE ------------
 def align_to_columns(df, target_cols):
-    df_cols = set(df.columns)
-    return df.select(
-        *[F.col(c) if c in df_cols else F.lit(None).alias(c) for c in target_cols]
-    )
+    s = set(df.columns)
+    return df.select(*[F.col(c) if c in s else F.lit(None).alias(c) for c in target_cols])
 
 master_cols = actual_d.columns
 plan_d_aligned     = align_to_columns(plan_d, master_cols)
 forecast_d_aligned = align_to_columns(forecast_d, master_cols)
 
-# -----------------------------
-# CONCATENATE (STACK ALL)
-# -----------------------------
 facts_concat = (
     actual_d
       .unionByName(plan_d_aligned, allowMissingColumns=True)
       .unionByName(forecast_d_aligned, allowMissingColumns=True)
+).alias("f")
+
+# ------------ JOIN ONCE TO DIMENSIONS (correct keys) ------------
+ad = account_df.alias("ad")
+pd = product_df.alias("pd")
+cc = costcenter_df.alias("cc")
+
+joined = (
+    facts_concat
+      .join(ad, F.col("f.ACCOUNT")     == F.col("ad.Account"),      "left")
+      .join(pd, F.col("f.PRODUCTLINE") == F.col("pd.ProductLine"),  "left")
+      .join(cc, F.col("f.COSTCENTER")  == F.col("cc.Cost_Center"),  "left")
 )
 
-# -----------------------------
-# SAVE TO FILES → SQL_DUMPS
-# -----------------------------
-writer = facts_concat
+# ------------ SELECT: keep fact cols; prefix dimension cols ------------
+# keep all fact columns exactly as-is
+fact_cols = [F.col(f"f.{c}").alias(c) for c in facts_concat.columns]
+
+# prefix all dim columns to avoid name clashes (L1, L4_Description, etc.)
+acc_cols  = [F.col(f"ad.{c}").alias(f"acc_{c}")  for c in account_df.columns]
+prod_cols = [F.col(f"pd.{c}").alias(f"prod_{c}") for c in product_df.columns]
+cc_cols   = [F.col(f"cc.{c}").alias(f"cc_{c}")   for c in costcenter_df.columns]
+
+final_df = joined.select(*(fact_cols + acc_cols + prod_cols + cc_cols))
+
+# ------------ SAVE TO FILES → SQL_DUMPS ------------
+writer = final_df
 if COALESCE_SINGLE_FILE and OUTPUT_FORMAT in ("parquet","csv"):
     writer = writer.coalesce(1)
 
-writer = writer.write.mode("overwrite")
-
+w = writer.write.mode("overwrite")
 if OUTPUT_FORMAT == "csv":
-    writer.format("csv").option("header","true").save(TARGET_PATH)
+    w.format("csv").option("header","true").save(TARGET_PATH)
 elif OUTPUT_FORMAT == "delta":
-    writer.format("delta").option("overwriteSchema","true").save(TARGET_PATH)
-else:  # parquet (default)
-    writer.format("parquet").save(TARGET_PATH)
+    w.format("delta").option("overwriteSchema","true").save(TARGET_PATH)
+else:  # parquet
+    w.format("parquet").save(TARGET_PATH)
 
-print(f"[OK] Unified, deduped, and filter-ready dataset saved at: {TARGET_PATH}")
+print(f"[OK] Hierarchy-enabled granular file saved at: {TARGET_PATH} (format={OUTPUT_FORMAT})")
