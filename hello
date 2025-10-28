@@ -1,30 +1,35 @@
-# --- Imports
+# =========================
+# Imports
+# =========================
 import pyspark.sql.functions as F
-from pyspark.sql import Window
+from functools import reduce  # <-- use Python's reduce for combining conditions
 
-# --- Load facts & dims (as in your notebook)
+# =========================
+# Load facts & dimensions
+# =========================
 actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
 plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
 forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
 
-costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")   # cc.*
-product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")       # pd.*
-account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")       # ad.*
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")
+product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")
+account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")
 
-# ---------- Helper: list of columns except a few ----------
+# =========================
+# Helpers
+# =========================
 def cols_except(df, exclude):
     ex = set(exclude)
     return [c for c in df.columns if c not in ex]
 
-# ---------- Step A: DUPLICATE SURFACING (no changes yet) ----------
+# ---------- A) SURFACE DUPLICATES (no mutation) ----------
 def find_duplicates(df, fact_name):
     """
-    Returns two DFs:
-      1) exact_dups  : rows where *all* columns match and appear >1 time
-      2) amount_only : groups where all non-Amount columns match but Amount differs.
-                       Includes summed Amount and counts for inspection.
+    Returns:
+      exact_dups: rows where *all* columns match (count > 1)
+      amount_only: groups where all non-Amount columns are same but Amount differs
     """
-    # 1) Exact duplicates (all columns)
+    # 1) Exact duplicate rows
     exact_dups = (
         df.groupBy(df.columns)
           .count()
@@ -32,7 +37,7 @@ def find_duplicates(df, fact_name):
           .withColumn("FACT_SOURCE", F.lit(fact_name))
     )
 
-    # 2) "Only Amount differs" detection
+    # 2) Only-Amount-diff detection
     key_cols = cols_except(df, ["Amount"])
     amount_only = (
         df.groupBy(key_cols)
@@ -46,12 +51,11 @@ def find_duplicates(df, fact_name):
     )
     return exact_dups, amount_only
 
-# Run duplicate surfacing for visibility (inspect before proceeding)
+# Run duplicate surfacing (review these views before proceeding if you like)
 actual_exact_dups,   actual_amount_only   = find_duplicates(actual_df,   "ACTUALS")
 plan_exact_dups,     plan_amount_only     = find_duplicates(plan_df,     "PLAN")
 forecast_exact_dups, forecast_amount_only = find_duplicates(forecast_df, "FORECAST")
 
-# Materialize to temp views so you can open & review quickly in Synapse
 actual_exact_dups.createOrReplaceTempView("vw_exact_dups_actuals")
 plan_exact_dups.createOrReplaceTempView("vw_exact_dups_plan")
 forecast_exact_dups.createOrReplaceTempView("vw_exact_dups_forecast")
@@ -60,134 +64,28 @@ actual_amount_only.createOrReplaceTempView("vw_amount_only_dups_actuals")
 plan_amount_only.createOrReplaceTempView("vw_amount_only_dups_plan")
 forecast_amount_only.createOrReplaceTempView("vw_amount_only_dups_forecast")
 
-# Example: spark.sql("SELECT * FROM vw_amount_only_dups_plan ORDER BY row_count DESC").show(50, False)
+# Example to inspect:
+# spark.sql("SELECT * FROM vw_amount_only_dups_plan ORDER BY row_count DESC").show(50, False)
 
-
-# ---------- Step B: CANONICAL DEDUPE (apply your rule) ----------
+# ---------- B) CANONICAL DEDUPE (sum Amount when only Amount differs) ----------
 def dedupe_sum_amount(df):
-    """
-    Collapses identical records. If only Amount differs, it sums Amount.
-    (Group by all columns EXCEPT Amount; aggregate sum(Amount) as Amount)
-    """
     key_cols = cols_except(df, ["Amount"])
-    return (
-        df.groupBy(key_cols)
-          .agg(F.sum("Amount").alias("Amount"))
-    )
+    return df.groupBy(key_cols).agg(F.sum("Amount").alias("Amount"))
 
-# ---------- Step C: Enrichment + KPI filter + Scenario/Year/Version filter ----------
-def build_granular(fact_df, fact_name,
-                   scenarios=None, years=None, versions=None):
+# ---------- C) ENRICH + KPI FILTER + FRONT-END FILTERS ----------
+def build_granular(fact_df, fact_name, scenarios=None, years=None, versions=None):
     """
-    1) Dedupes fact (sum Amount when only Amount differs)
-    2) Joins dims (left) and retains all hierarchy levels
-    3) Applies SCENARIO/YEAR/VERSION filters (if lists provided)
-    4) Keeps only KPIs: Revenue, Operating Expenses, EBITDA
-    5) Adds FACT_SOURCE tag
+    - Dedupes (sum Amount where only Amount differs)
+    - Joins to dims (left)
+    - Filters by SCENARIO/YEAR/VERSION (lists supported)
+    - Keeps KPIs: Revenue, Operating Expenses, EBITDA (from hierarchy)
+    - Adds FACT_SOURCE tag
     """
     # 1) Dedup
-    fact_clean = dedupe_sum_amount(fact_df)
+    d = dedupe_sum_amount(fact_df).alias("d")
 
-    # 2) Join to dims
-    d = fact_clean.alias("d")
-    cc = costcenter_df.alias("cc")
-    pd = product_df.alias("pd")
-    ad = account_df.alias("ad")
-
+    # 2) Joins
     granular = (
-        d.join(cc, F.col("d.COSTCENTER")  == F.col("cc.CostCenter"),  "left")
-         .join(pd, F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
-         .join(ad, F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
-    )
-
-    # 3) Scenario/Year/Version filters (lists allowed)
-    conds = []
-    if scenarios: conds.append(F.col("d.SCENARIO").isin([*scenarios]))
-    if years:     conds.append(F.col("d.YEAR").isin([*years]))          # e.g., ["FY25"]
-    if versions:  conds.append(F.col("d.VERSION").isin([*versions]))
-
-    if conds:
-        granular = granular.filter(F.reduce(lambda a, b: a & b, conds))
-
-    # 4) KPI flag based on account hierarchy:
-    #    Revenue & OpEx via L5_Description; EBITDA when any level’s description contains "EBITDA"
-    def contains_ebitda(col):
-        return F.upper(F.col(col)).contains("EBITDA")
-
-    kpi_expr = (
-        F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
-         .when(F.col("ad.L5_Description") == "Operating Expenses", "Operating Expenses")
-         .when(contains_ebitda("ad.L5_Description") | contains_ebitda("ad.L6_Description") | contains_ebitda("ad.L7_Description") | (F.col("ad.L4") == "EBITDA"),
-               "EBITDA")
-    )
-
-    granular = granular.withColumn("KPI", kpi_expr).filter(F.col("KPI").isNotNull())
-
-    # 5) Select all hierarchies + core fact fields + tag
-    granular = granular.select(
-        # Product hierarchy L3–L8
-        F.col("pd.L3_Description").alias("product_L3_Description"),
-        F.col("pd.L4_Description").alias("product_L4_Description"),
-        F.col("pd.L5_Description").alias("product_L5_Description"),
-        F.col("pd.L6_Description").alias("product_L6_Description"),
-        F.col("pd.L7_Description").alias("product_L7_Description"),
-        F.col("pd.L8_Description").alias("product_L8_Description"),
-
-        # Account hierarchy L4–L7
-        F.col("ad.L4").alias("account_L4"),
-        F.col("ad.L5_Description").alias("account_L5_Description"),
-        F.col("ad.L6_Description").alias("account_L6_Description"),
-        F.col("ad.L7_Description").alias("account_L7_Description"),
-
-        # Cost Center hierarchy L1–L4
-        F.col("cc.L1_Description").alias("cc_L1_Description"),
-        F.col("cc.L2_Description").alias("cc_L2_Description"),
-        F.col("cc.L3_Description").alias("cc_L3_Description"),
-        F.col("cc.L4_Description").alias("cc_L4_Description"),
-
-        # Business keys / attributes (keep originals)
-        F.col("d.ACCOUNT"), F.col("d.PRODUCTLINE"), F.col("d.COSTCENTER"),
-        F.col("d.ENTITY"), F.col("d.CUSTOMER"), F.col("d.CURRENCY"),
-        F.col("d.DATASOURCE"), F.col("d.DATE"),
-        F.col("d.SCENARIO"), F.col("d.VERSION"), F.col("d.YEAR"),
-
-        # Measures
-        F.col("d.Amount"),
-
-        # KPI & fact source
-        F.col("KPI"),
-        F.lit(fact_name).alias("FACT_SOURCE")
-    )
-
-    return granular
-
-# ---------- Step D: Build granular per fact for FY25 + chosen scenarios/versions ----------
-# Per your inputs:
-#   - Filter YEAR="FY25"
-#   - You may pass scenario(s)/version(s) lists you want; example below shows common pairs.
-gran_actual  = build_granular(actual_df,  "ACTUALS",  years=["FY25"])
-gran_plan    = build_granular(plan_df,    "PLAN",     years=["FY25"])
-gran_forecast= build_granular(forecast_df,"FORECAST", years=["FY25"])
-
-# ---------- Step E: One unified granular file ----------
-granular_all = gran_actual.unionByName(gran_plan, allowMissingColumns=True) \
-                          .unionByName(gran_forecast, allowMissingColumns=True)
-
-# Optionally, persist as a GOLD table (unique name as requested)
-spark.sql("CREATE DATABASE IF NOT EXISTS FPNA_FISRPT_GOLD")
-target_table = "FPNA_FISRPT_GOLD.dbo.GRANULAR_KPI_FY25_ALL"
-# If you want to overwrite each run:
-(granular_all
- .write
- .mode("overwrite")
- .format("delta")           # or "parquet" depending on your lake standard
- .saveAsTable(target_table))
-
-print(f"Written unified granular table to {target_table}")
-
-# Also expose duplicate views (already created) so you can inspect before/after.
-# If you want, write the duplicates into audit tables:
-# actual_exact_dups.write.mode("overwrite").saveAsTable("FPNA_FISRPT_GOLD.dbo.audit_exact_dups_actuals")
-# plan_exact_dups.write.mode("overwrite").saveAsTable("FPNA_FISRPT_GOLD.dbo.audit_exact_dups_plan")
-# forecast_exact_dups.write.mode("overwrite").saveAsTable("FPNA_FISRPT_GOLD.dbo.audit_exact_dups_forecast")
-# ...and similarly for *_amount_only
+        d.join(costcenter_df.alias("cc"), F.col("d.COSTCENTER")  == F.col("cc.CostCenter"),  "left")
+         .join(product_df.alias("pd"),   F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
+         .join(account_df.ali_
