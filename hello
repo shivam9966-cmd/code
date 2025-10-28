@@ -1,2 +1,2 @@
-SELECT * FROM vw_exact_dups_plan;
-SELECT * FROM vw_amount_only_dups_plan;
+spark.sql("SELECT * FROM vw_exact_dups_plan").show(50, truncate=False)
+spark.sql("SELECT * FROM vw_amount_only_dups_plan").show(50, truncate=False)
