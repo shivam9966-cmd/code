@@ -1,8 +1,5 @@
-(
-    granular
-      .coalesce(1)
-      .write
-      .mode("overwrite")
-      .option("header", "true")
-      .csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
-)
+# ✅ Load your final CSV file
+df = spark.read.csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI", header=True, inferSchema=True)
+
+# ✅ Display first 20 rows in table format
+display(df.limit(20))
