@@ -1,12 +1,14 @@
 df = spark.read.parquet("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
-print(df.columns)
 
-df = spark.read.option("header", "true").csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
-print(df.columns)
+# Force full column display (Spark truncates by default)
+pd_df = df.limit(20).toPandas()
 
+# Show *all* columns, no horizontal cutoff
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_colwidth', None)
 
-df = spark.read.parquet("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
-df.show(20, truncate=False)
+display(pd_df)
+
 
 
 
