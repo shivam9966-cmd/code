@@ -1,5 +1,10 @@
-# ✅ Load your final CSV file
-df = spark.read.csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI", header=True, inferSchema=True)
+# Load your concatenated CSV file
+concat_df = spark.read.csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI", header=True, inferSchema=True)
 
-# ✅ Display first 20 rows in table format
-display(df.limit(20))
+# Count total rows
+total_rows = concat_df.count()
+print(f"Total rows in concatenated file: {total_rows:,}")
+
+
+
+concat_df.groupBy("FACT_SOURCE").count().show()
