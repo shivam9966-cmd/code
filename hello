@@ -1,34 +1,12 @@
-# ===================================================
-# Robust FY25 KPI build (defensive selects for dim cols)
-# Saves single CSV, overwriting existing folder
-# ===================================================
-
 import pyspark.sql.functions as F
 
-# ---------- Load tables ----------
-actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
-plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
-forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
-
-account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")      # keys & hierarchy
-product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")      # product hierarchy
-costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")  # cost center hierarchy
-
-# ---------- Filter FY25 early ----------
-actual_df   = actual_df.filter(F.col("YEAR") == "FY25")
-plan_df     = plan_df.filter(F.col("YEAR") == "FY25")
-forecast_df = forecast_df.filter(F.col("YEAR") == "FY25")
-
-# ---------- Helper: safe column selector ----------
 def safe_dim_cols(df_alias, wanted, prefix):
     """
-    df_alias: ('ad','pd','cc'), the alias used in the joined frame
-    wanted: list of tuples (source_col_name, output_friendly_name)
-    prefix: 'Account_', 'Product_', 'Cost_Center_'  (we'll prepend if not already)
-    Returns: list of Spark Columns; if col missing -> lit(None) with desired alias
+    df_alias: 'ad' | 'pd' | 'cc'
+    wanted: list of tuples (source_col_name, friendly_name)
+    prefix: e.g. 'Account_', 'Product_', 'Cost_Center_'
+    Returns Spark Columns. If missing -> string-typed null.
     """
-    out = []
-    # discover actual columns from the real DataFrames by alias
     if df_alias == "ad":
         existing = set(account_df.columns)
     elif df_alias == "pd":
@@ -38,115 +16,12 @@ def safe_dim_cols(df_alias, wanted, prefix):
     else:
         existing = set()
 
+    out = []
     for src, friendly in wanted:
-        # ensure nice prefix
         alias_name = friendly if friendly.startswith(prefix) else f"{prefix}{friendly}"
         if src in existing:
             out.append(F.col(f"{df_alias}.{src}").alias(alias_name))
         else:
-            out.append(F.lit(None).alias(alias_name))
+            # IMPORTANT: cast to string so the type is not NullType (void)
+            out.append(F.lit(None).cast("string").alias(alias_name))
     return out
-
-# ---------- Build function per fact ----------
-def prepare_fact(df, source_name):
-    d  = df.alias("d")
-    ad = account_df.alias("ad")
-    pd = product_df.alias("pd")
-    cc = costcenter_df.alias("cc")
-
-    # Join with dims
-    joined = (
-        d.join(ad, F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
-         .join(pd, F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
-         .join(cc, F.col("d.COSTCENTER")  == F.col("cc.COSTCENTER"),  "left")
-    )
-
-    # KPI tagging from Account hierarchy
-    joined = (
-        joined.withColumn(
-            "KPI",
-            F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
-             .when(F.col("ad.L5_Description") == "Operating Expenses", "OPEX")
-             .when(F.col("ad.L4") == "EBITDA", "EBITDA")
-        )
-        .filter(F.col("KPI").isNotNull())
-    )
-
-    # Fact columns as-is (from the 'd' alias)
-    fact_cols = [F.col(f"d.{c}").alias(c) for c in df.columns]
-
-    # Safely select a concise set of hierarchy columns with friendly names
-    acc_wanted = [
-        ("Account", "Account"),                 # the key
-        ("L4", "L4"),
-        ("L5_Description", "L5_Description"),
-    ]
-    prod_wanted = [
-        ("ProductLine", "Line"),                # the key
-        ("L3_Description", "L3_Description"),   # will be null if not present
-    ]
-    cc_wanted = [
-        ("COSTCENTER", "Code"),                 # the key
-        ("L3_Description", "L3_Description"),
-    ]
-
-    acc_cols  = safe_dim_cols("ad", acc_wanted,  "Account_")
-    prod_cols = safe_dim_cols("pd", prod_wanted, "Product_")
-    cc_cols   = safe_dim_cols("cc", cc_wanted,   "Cost_Center_")
-
-    # Final selection with provenance
-    renamed = joined.select(
-        *fact_cols,
-        *acc_cols,
-        *prod_cols,
-        *cc_cols,
-        F.col("KPI"),
-        F.lit(source_name).alias("FACT_SOURCE")
-    )
-
-    return renamed
-
-# ---------- Apply to facts ----------
-act_kpi  = prepare_fact(actual_df,   "ACTUALS")
-plan_kpi = prepare_fact(plan_df,     "PLAN")
-fcst_kpi = prepare_fact(forecast_df, "FORECAST")
-
-# ---------- Union all ----------
-granular = (
-    act_kpi
-      .unionByName(plan_kpi, allowMissingColumns=True)
-      .unionByName(fcst_kpi, allowMissingColumns=True)
-)
-
-# ---------- Add Actual / Forecasted from SCENARIO like F9_3 ----------
-granular = (
-    granular
-    .withColumn(
-        "Actual",
-        F.when(
-            (F.col("FACT_SOURCE") == "FORECAST") & F.col("SCENARIO").rlike("^F\\d+_\\d+$"),
-            F.regexp_extract("SCENARIO", "F(\\d+)_\\d+", 1)
-        )
-    )
-    .withColumn(
-        "Forecasted",
-        F.when(
-            (F.col("FACT_SOURCE") == "FORECAST") & F.col("SCENARIO").rlike("^F\\d+_\\d+$"),
-            F.regexp_extract("SCENARIO", "F\\d+_(\\d+)", 1)
-        )
-    )
-)
-
-# ---------- Save as single CSV (overwrite) ----------
-TARGET_PATH = "Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI"
-
-(
-    granular
-      .coalesce(1)
-      .write
-      .mode("overwrite")
-      .option("header", "true")
-      .csv(TARGET_PATH)
-)
-
-print(f"[✅] FY25 granular CSV saved → {TARGET_PATH}")
