@@ -1,15 +1,27 @@
-TARGET_PATH = "Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI"
+# Read the file you just created
+df_final = spark.read.parquet("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
+
+# Show first 50 rows
+df_final.show(50, truncate=False)
 
 
 
-writer = final_df
-if COALESCE_SINGLE_FILE and OUTPUT_FORMAT in ("parquet","csv"):
-    writer = writer.coalesce(1)
 
-w = writer.write.mode("overwrite")
-if OUTPUT_FORMAT == "csv":
-    w.format("csv").option("header","true").save(TARGET_PATH)
-elif OUTPUT_FORMAT == "delta":
-    w.format("delta").option("overwriteSchema","true").save(TARGET_PATH)
-else:  # parquet
-    w.format("parquet").save(TARGET_PATH)
+
+
+print("Row count:", df_final.count())
+print("Columns:", df_final.columns)
+
+
+df_final.groupBy("FACT_SOURCE").count().show()
+
+
+df_final.select("KPI", "FACT_SOURCE", "Amount").distinct().show(20)
+
+
+(
+    df_final.groupBy([c for c in df_final.columns if c != "Amount"])
+    .count()
+    .filter("count > 1")
+    .show(20, truncate=False)
+)
