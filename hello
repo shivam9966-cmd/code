@@ -5,6 +5,10 @@ df = spark.read.option("header", "true").csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP
 print(df.columns)
 
 
+df = spark.read.parquet("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
+df.show(20, truncate=False)
+
+
 
 
 
