@@ -1,34 +1,28 @@
-df = spark.read.parquet("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
+import pyspark.sql.functions as F
 
-# Force full column display (Spark truncates by default)
-pd_df = df.limit(20).toPandas()
+# Load your fact and dimension tables
+actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
+plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
+forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
+account_df  = spark.table("FPNA_FISRPT_SILVER.dbo.account")
 
-# Show *all* columns, no horizontal cutoff
-pd.set_option('display.max_columns', None)
-pd.set_option('display.max_colwidth', None)
+# Join helper function to bring KPI info
+def add_kpi_flag(df):
+    joined = df.join(account_df, df["ACCOUNT"] == account_df["Account"], "left")
+    return joined.withColumn(
+        "KPI",
+        F.when(F.col("L5_Description") == "Revenue", "Revenue")
+         .when(F.col("L5_Description") == "Operating Expenses", "OPEX")
+         .when(F.col("L4") == "EBITDA", "EBITDA")
+    ).filter(F.col("KPI").isNotNull())
 
-display(pd_df)
+# Apply to each fact table
+act_kpi = add_kpi_flag(actual_df)
+pln_kpi = add_kpi_flag(plan_df)
+fcst_kpi = add_kpi_flag(forecast_df)
 
-
-
-
-
-
-
-
-print("Row count:", df_final.count())
-print("Columns:", df_final.columns)
-
-
-df_final.groupBy("FACT_SOURCE").count().show()
-
-
-df_final.select("KPI", "FACT_SOURCE", "Amount").distinct().show(20)
-
-
-(
-    df_final.groupBy([c for c in df_final.columns if c != "Amount"])
-    .count()
-    .filter("count > 1")
-    .show(20, truncate=False)
-)
+# Show counts
+print("KPI Row Counts per Table:\n")
+print(f"ACTUALS  → {act_kpi.count()}")
+print(f"PLAN     → {pln_kpi.count()}")
+print(f"FORECAST → {fcst_kpi.count()}")
