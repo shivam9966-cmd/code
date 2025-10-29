@@ -1,28 +1,35 @@
 import pyspark.sql.functions as F
 
-# Load your fact and dimension tables
+# Load facts and account dimension
 actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
 plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
 forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
 account_df  = spark.table("FPNA_FISRPT_SILVER.dbo.account")
 
-# Join helper function to bring KPI info
-def add_kpi_flag(df):
-    joined = df.join(account_df, df["ACCOUNT"] == account_df["Account"], "left")
-    return joined.withColumn(
+# --- Helper to dedupe within each fact (sum when only Amount differs)
+def dedupe_sum_amount(df):
+    amt = next(c for c in df.columns if c.lower() == "amount")
+    keys = [c for c in df.columns if c != amt]
+    return df.groupBy(keys).agg(F.sum(amt).alias(amt))
+
+# --- Helper to join with account & keep only KPI rows
+def kpi_filter(df):
+    d = dedupe_sum_amount(df).alias("d")
+    a = account_df.alias("a")
+    j = d.join(a, F.col("d.ACCOUNT") == F.col("a.Account"), "left")
+    return j.withColumn(
         "KPI",
-        F.when(F.col("L5_Description") == "Revenue", "Revenue")
-         .when(F.col("L5_Description") == "Operating Expenses", "OPEX")
-         .when(F.col("L4") == "EBITDA", "EBITDA")
+        F.when(F.col("a.L5_Description") == "Revenue", "Revenue")
+         .when(F.col("a.L5_Description") == "Operating Expenses", "OPEX")
+         .when(F.col("a.L4") == "EBITDA", "EBITDA")
     ).filter(F.col("KPI").isNotNull())
 
-# Apply to each fact table
-act_kpi = add_kpi_flag(actual_df)
-pln_kpi = add_kpi_flag(plan_df)
-fcst_kpi = add_kpi_flag(forecast_df)
+# --- Apply to each fact and show counts
+act_kpi = kpi_filter(actual_df)
+pln_kpi = kpi_filter(plan_df)
+fcst_kpi = kpi_filter(forecast_df)
 
-# Show counts
-print("KPI Row Counts per Table:\n")
-print(f"ACTUALS  → {act_kpi.count()}")
-print(f"PLAN     → {pln_kpi.count()}")
-print(f"FORECAST → {fcst_kpi.count()}")
+print("Row counts after KPI filter (with dedupe):")
+print(f"ACTUALS  → {act_kpi.count():,}")
+print(f"PLAN     → {pln_kpi.count():,}")
+print(f"FORECAST → {fcst_kpi.count():,}")
