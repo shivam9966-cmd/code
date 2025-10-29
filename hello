@@ -1,3 +1,129 @@
+# ===================================================
+# FY25 Granular KPI File Builder
+# Filters: Revenue, OPEX, EBITDA
+# Adds: Actual / Forecasted columns (from SCENARIO)
+# Uses full friendly column names
+# Saves single CSV file (overwrite existing)
+# ===================================================
+
+import pyspark.sql.functions as F
+
+# ---------- Load tables ----------
+actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
+plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
+forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
+
+account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")
+product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")
+
+# ---------- Filter FY25 early ----------
+actual_df   = actual_df.filter(F.col("YEAR") == "FY25")
+plan_df     = plan_df.filter(F.col("YEAR") == "FY25")
+forecast_df = forecast_df.filter(F.col("YEAR") == "FY25")
+
+# ---------- Safe column selector ----------
+def safe_dim_cols(df_alias, wanted, prefix):
+    """Return dimension columns safely with friendly names (cast missing to string)."""
+    if df_alias == "ad":
+        existing = set(account_df.columns)
+    elif df_alias == "pd":
+        existing = set(product_df.columns)
+    elif df_alias == "cc":
+        existing = set(costcenter_df.columns)
+    else:
+        existing = set()
+
+    cols = []
+    for src, friendly in wanted:
+        alias_name = friendly if friendly.startswith(prefix) else f"{prefix}{friendly}"
+        if src in existing:
+            cols.append(F.col(f"{df_alias}.{src}").alias(alias_name))
+        else:
+            cols.append(F.lit(None).cast("string").alias(alias_name))
+    return cols
+
+# ---------- Fact preparation function ----------
+def prepare_fact(df, source_name):
+    d  = df.alias("d")
+    ad = account_df.alias("ad")
+    pd = product_df.alias("pd")
+    cc = costcenter_df.alias("cc")
+
+    # Join with dimension tables
+    joined = (
+        d.join(ad, F.col("d.ACCOUNT") == F.col("ad.Account"), "left")
+         .join(pd, F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
+         .join(cc, F.col("d.COSTCENTER") == F.col("cc.COSTCENTER"), "left")
+    )
+
+    # KPI filter (Revenue / OPEX / EBITDA)
+    joined = joined.withColumn(
+        "KPI",
+        F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
+         .when(F.col("ad.L5_Description") == "Operating Expenses", "OPEX")
+         .when(F.col("ad.L4") == "EBITDA", "EBITDA")
+    ).filter(F.col("KPI").isNotNull())
+
+    # Select columns
+    fact_cols = [F.col(f"d.{c}").alias(c) for c in df.columns]
+
+    acc_cols  = safe_dim_cols("ad", [("Account","Account_Code"),("L4","L4"),("L5_Description","L5_Description")], "Account_")
+    prod_cols = safe_dim_cols("pd", [("ProductLine","Line"),("L3_Description","L3_Description")], "Product_")
+    cc_cols   = safe_dim_cols("cc", [("COSTCENTER","Code"),("L3_Description","L3_Description")], "Cost_Center_")
+
+    out = joined.select(
+        *fact_cols, *acc_cols, *prod_cols, *cc_cols,
+        F.col("KPI"),
+        F.lit(source_name).alias("FACT_SOURCE")
+    )
+
+    return out
+
+# ---------- Prepare each fact ----------
+act_kpi  = prepare_fact(actual_df,   "ACTUALS")
+plan_kpi = prepare_fact(plan_df,     "PLAN")
+fcst_kpi = prepare_fact(forecast_df, "FORECAST")
+
+# ---------- Union all ----------
+granular = (
+    act_kpi
+    .unionByName(plan_kpi, allowMissingColumns=True)
+    .unionByName(fcst_kpi, allowMissingColumns=True)
+)
+
+# ---------- Add Actual & Forecasted columns from SCENARIO ----------
+granular = (
+    granular
+    .withColumn(
+        "Actual",
+        F.when(
+            (F.col("FACT_SOURCE") == "FORECAST") & F.col("SCENARIO").rlike("^F\\d+_\\d+$"),
+            F.regexp_extract("SCENARIO", "F(\\d+)_\\d+", 1)
+        )
+    )
+    .withColumn(
+        "Forecasted",
+        F.when(
+            (F.col("FACT_SOURCE") == "FORECAST") & F.col("SCENARIO").rlike("^F\\d+_\\d+$"),
+            F.regexp_extract("SCENARIO", "F\\d+_(\\d+)", 1)
+        )
+    )
+)
+
+# ---------- Save as single CSV file ----------
+TARGET_PATH = "Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI"
+
+(
+    granular
+      .coalesce(1)
+      .write
+      .mode("overwrite")
+      .option("header", "true")
+      .csv(TARGET_PATH)
+)
+
+print(f"[✅] FY25 granular KPI CSV file created successfully → {TARGET_PATH}")
 # Load your concatenated CSV file
 concat_df = spark.read.csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI", header=True, inferSchema=True)
 
