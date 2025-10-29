@@ -1,9 +1,8 @@
-# Force string type for friendly-dimension columns that might be all-null
-stringify_cols = [
-    "Account_Account", "Account_L4", "Account_L5_Description",
-    "Product_Line", "Product_L3_Description",
-    "Cost_Center_Code", "Cost_Center_L3_Description"
-]
-for c in stringify_cols:
-    if c in granular.columns:
-        granular = granular.withColumn(c, F.col(c).cast("string"))
+(
+    granular
+      .coalesce(1)
+      .write
+      .mode("overwrite")
+      .option("header", "true")
+      .csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
+)
