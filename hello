@@ -1,27 +1,9 @@
-import pyspark.sql.functions as F
-
-def safe_dim_cols(df_alias, wanted, prefix):
-    """
-    df_alias: 'ad' | 'pd' | 'cc'
-    wanted: list of tuples (source_col_name, friendly_name)
-    prefix: e.g. 'Account_', 'Product_', 'Cost_Center_'
-    Returns Spark Columns. If missing -> string-typed null.
-    """
-    if df_alias == "ad":
-        existing = set(account_df.columns)
-    elif df_alias == "pd":
-        existing = set(product_df.columns)
-    elif df_alias == "cc":
-        existing = set(costcenter_df.columns)
-    else:
-        existing = set()
-
-    out = []
-    for src, friendly in wanted:
-        alias_name = friendly if friendly.startswith(prefix) else f"{prefix}{friendly}"
-        if src in existing:
-            out.append(F.col(f"{df_alias}.{src}").alias(alias_name))
-        else:
-            # IMPORTANT: cast to string so the type is not NullType (void)
-            out.append(F.lit(None).cast("string").alias(alias_name))
-    return out
+# Force string type for friendly-dimension columns that might be all-null
+stringify_cols = [
+    "Account_Account", "Account_L4", "Account_L5_Description",
+    "Product_Line", "Product_L3_Description",
+    "Cost_Center_Code", "Cost_Center_L3_Description"
+]
+for c in stringify_cols:
+    if c in granular.columns:
+        granular = granular.withColumn(c, F.col(c).cast("string"))
