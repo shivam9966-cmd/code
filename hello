@@ -1,8 +1,9 @@
-# Read the file you just created
-df_final = spark.read.parquet("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
+df = spark.read.parquet("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
+print(df.columns)
 
-# Show first 50 rows
-df_final.show(50, truncate=False)
+df = spark.read.option("header", "true").csv("Files/SQL_DUMPS/FACTS_CONCAT_DEDUP_JOINED_KPI")
+print(df.columns)
+
 
 
 
