@@ -1,3 +1,9 @@
-print(f"Total rows in ACTUALS  : {actual_count:,}")
-print(f"Total rows in PLAN     : {plan_count:,}")
-print(f"Total rows in FORECAST : {forecast_count:,}")
+from pyspark.sql import Row
+
+counts_df = spark.createDataFrame([
+    Row(Table="ACTUALS", Count=actual_count),
+    Row(Table="PLAN", Count=plan_count),
+    Row(Table="FORECAST", Count=forecast_count)
+])
+
+display(counts_df)
