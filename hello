@@ -1,67 +1,33 @@
-import pyspark.sql.functions as F
+from pyspark.sql import Window, functions as F
 
-account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account").alias("ad")
-product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product").alias("pd")
-costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center").alias("cc")
+ACCOUNT_COL = "ACCOUNT"  # change if your column is named differently
+TARGET = 5000
 
-def safe_dim_cols(df_alias, wanted, prefix, existing_cols):
-    cols = []
-    for src, friendly in wanted:
-        out_name = friendly if friendly.startswith(prefix) else f"{prefix}{friendly}"
-        if src in existing_cols:
-            cols.append(F.col(f"{df_alias}.{src}").alias(out_name))
-        else:
-            cols.append(F.lit(None).cast("string").alias(out_name))
-    return cols
+acct_counts = (
+    df.groupBy(ACCOUNT_COL).count()
+      .orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
+)
 
-acc_exist = set(account_df.columns)
-pd_exist  = set(product_df.columns)
-cc_exist  = set(costcenter_df.columns)
+w = Window.orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
+acct_counts = (acct_counts
+    .withColumn("row_number", F.row_number().over(w))
+    .withColumn("cumulative_sum", F.sum("count").over(w))
+)
 
-ACC_WANTED = [
-    ("Account", "Account_Code"),
-    ("L4", "L4"),
-    ("L5_Description", "L5_Description"),
-    ("L6_Description", "L6_Description"),
-    ("L7_Description", "L7_Description"),
-]
+exceed = (acct_counts
+    .filter(F.col("cumulative_sum") > TARGET)
+    .orderBy("cumulative_sum")
+    .select("row_number")
+    .limit(1)
+    .collect()
+)
 
-PD_WANTED = [
-    ("ProductLine", "Line"),
-    ("L3_Description", "L3_Description"),
-    ("L4_Description", "L4_Description"),
-    ("L5_Description", "L5_Description"),
-    ("L6_Description", "L6_Description"),
-    ("L7_Description", "L7_Description"),
-    ("L8_Description", "L8_Description"),
-]
+if exceed:
+    rnum = exceed[0][0]
+    to_keep = acct_counts.where((F.col("cumulative_sum") <= TARGET) | (F.col("row_number") == rnum)) \
+                         .select(ACCOUNT_COL).distinct()
+else:
+    to_keep = acct_counts.select(ACCOUNT_COL).distinct()
 
-CC_WANTED = [
-    ("COSTCENTER", "Code"),
-    ("CC_L1_Description", "L1_Description"),
-    ("CC_L2_Description", "L2_Description"),
-    ("CC_L3_Description", "L3_Description"),
-    ("CC_L4_Description", "L4_Description"),
-]
-
-def prepare_fact(df, source_name):
-    d = df.alias("d")
-    joined = (
-        d.join(account_df,    F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
-         .join(product_df,    F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
-         .join(costcenter_df, F.col("d.COSTCENTER")  == F.col("cc.COSTCENTER"),  "left")
-    )
-
-    joined = joined.withColumn(
-        "KPI",
-        F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
-         .when(F.col("ad.L5_Description") == "Operating Expenses", "OPEX")
-         .when(F.col("ad.L4") == "EBITDA", "EBITDA")
-    ).filter(F.col("KPI").isNotNull())
-
-    fact_cols = [F.col(f"d.{c}").alias(c) for c in df.columns]
-    acc_cols  = safe_dim_cols("ad", ACC_WANTED, "account_", acc_exist)
-    pd_cols   = safe_dim_cols("pd", PD_WANTED, "product_", pd_exist)
-    cc_cols   = safe_dim_cols("cc", CC_WANTED, "CC_", cc_exist)
-
-    return joined.select(*fact_cols, *acc_cols, *pd_cols, *cc_cols, F.col("KPI"), F.lit(source_name).alias("FACT_SOURCE"))
+subset = df.join(to_keep, on=ACCOUNT_COL, how="inner")
+print("Rows included (incl. full last account):", f"{subset.count():,}")
