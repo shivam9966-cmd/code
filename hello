@@ -1,3 +1,29 @@
+# ---------- Build all three datasets ----------
+act_kpi  = prepare_fact(actual_df,   "ACTUALS")
+plan_kpi = prepare_fact(plan_df,     "PLAN")
+fcst_kpi = prepare_fact(forecast_df, "FORECAST")
+
+# ---------- Combine them ----------
+granular = (
+    act_kpi
+      .unionByName(plan_kpi, allowMissingColumns=True)
+      .unionByName(fcst_kpi, allowMissingColumns=True)
+)
+
+# Confirm creation
+print("✅ Combined dataset created as 'granular'")
+print("Total rows:", granular.count())
+
+
+
+
+
+
+
+
+
+
+
 # Your final unioned frame from the rebuild step
 df = granular   # change if you used a different variable name
 
