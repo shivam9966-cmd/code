@@ -1,13 +1,12 @@
-#  Save the final granular DataFrame 
-OUTPUT_PATH = "Files/SQL_DUMPS"
+# Load the consolidated CSV file
+consolidated_df = spark.read.csv("Files/SQL_DUMPS", header=True, inferSchema=True)
 
-(
-    granular
-      .coalesce(1)                      # create just 1 CSV file
-      .write
-      .mode("overwrite")                # overwrite any existing file
-      .option("header", "true")         # include headers
-      .csv(OUTPUT_PATH)
-)
+# Group by Account column and count rows
+account_counts = consolidated_df.groupBy("ACCOUNT").count()
 
-print(f" Granular KPI file saved successfully → {OUTPUT_PATH}")
+# Show top 20 accounts with their counts
+account_counts.orderBy(F.col("count").desc()).show(20, truncate=False)
+
+# Optional: show total distinct accounts
+distinct_accounts = account_counts.count()
+print(f"Total distinct accounts: {distinct_accounts:,}")
