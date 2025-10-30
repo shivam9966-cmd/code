@@ -1,12 +1,12 @@
 # Load the consolidated CSV file
 consolidated_df = spark.read.csv("Files/SQL_DUMPS", header=True, inferSchema=True)
 
-# Group by Account column and count rows
+# Group by Account and count the number of rows per account
 account_counts = consolidated_df.groupBy("ACCOUNT").count()
 
-# Show top 20 accounts with their counts
-account_counts.orderBy(F.col("count").desc()).show(20, truncate=False)
+# Show the accounts with the least number of rows (ascending order)
+account_counts.orderBy(F.col("count").asc()).show(20, truncate=False)
 
-# Optional: show total distinct accounts
+# Optional: total distinct accounts
 distinct_accounts = account_counts.count()
 print(f"Total distinct accounts: {distinct_accounts:,}")
