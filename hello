@@ -1,12 +1,4 @@
+saved_df = spark.read.csv("Files/SQL_DUMPS_SMALL_ACCOUNTS", header=True, inferSchema=True)
 
-
-OUTPUT_PATH = "Files/SQL_DUMPS_SMALL_ACCOUNTS"   # <-- choose any folder name you like
-
-# Save as CSV with header
-(subset.coalesce(1)  # merges all partitions into 1 file for easy reading
-       .write
-       .mode("overwrite")
-       .option("header", "true")
-       .csv(OUTPUT_PATH))
-
-print(f"✅ File saved successfully at: {OUTPUT_PATH}")
+row_count = saved_df.count()
+print(f"✅ Total rows in saved CSV file: {row_count:,}")
