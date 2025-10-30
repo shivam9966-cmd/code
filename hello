@@ -1,118 +1,67 @@
+import pyspark.sql.functions as F
 
+account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account").alias("ad")
+product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product").alias("pd")
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center").alias("cc")
 
-from pyspark.sql import functions as F
-from pyspark.sql import Window
+def safe_dim_cols(df_alias, wanted, prefix, existing_cols):
+    cols = []
+    for src, friendly in wanted:
+        out_name = friendly if friendly.startswith(prefix) else f"{prefix}{friendly}"
+        if src in existing_cols:
+            cols.append(F.col(f"{df_alias}.{src}").alias(out_name))
+        else:
+            cols.append(F.lit(None).cast("string").alias(out_name))
+    return cols
 
-# ---- 0) Load consolidated file (your merged CSV) ----
-# If your CSV is inside a subfolder, point to that folder.
-consolidated_df = spark.read.csv("Files/SQL_DUMPS", header=True, inferSchema=True)
+acc_exist = set(account_df.columns)
+pd_exist  = set(product_df.columns)
+cc_exist  = set(costcenter_df.columns)
 
-# ---- 1) Helper: case-insensitive column resolver ----
-def resolve(colname, cols):
-    """Return actual column name in 'cols' matching 'colname' case-insensitively."""
-    m = {c.lower(): c for c in cols}
-    key = colname.lower()
-    if key not in m:
-        raise ValueError(f"Column not found (case-insensitive): {colname}. Available: {cols}")
-    return m[key]
-
-# Identify the true ACCOUNT column name (case-insensitive)
-ACCOUNT_COL = resolve("ACCOUNT", consolidated_df.columns)
-
-# ---- 2) Compute counts per account, ascending, with cumulative sum ----
-account_counts = (
-    consolidated_df
-    .groupBy(ACCOUNT_COL)
-    .count()
-    .orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
-)
-
-w = Window.orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
-account_counts = (
-    account_counts
-    .withColumn("row_number", F.row_number().over(w))
-    .withColumn("cumulative_sum", F.sum("count").over(w))
-)
-
-TARGET = 5000
-
-# First row that exceeds TARGET (may be None if total <= TARGET)
-exceed_row_df = (
-    account_counts
-    .filter(F.col("cumulative_sum") > TARGET)
-    .orderBy(F.col("cumulative_sum").asc())
-    .select("row_number")
-    .limit(1)
-)
-
-exceed_rows = exceed_row_df.collect()
-if exceed_rows:
-    threshold_rownum = exceed_rows[0][0]
-    include_df = account_counts.withColumn(
-        "include_flag",
-        (F.col("cumulative_sum") <= F.lit(TARGET)) | (F.col("row_number") == F.lit(threshold_rownum))
-    )
-else:
-    # Never exceeded TARGET -> include all
-    include_df = account_counts.withColumn("include_flag", F.lit(True))
-
-accounts_to_keep = include_df.filter("include_flag").select(ACCOUNT_COL).distinct()
-
-# ---- 3) Filter consolidated data to ONLY those accounts ----
-filtered_df = consolidated_df.join(accounts_to_keep, on=ACCOUNT_COL, how="inner")
-
-# ---- 4) Keep ONLY the columns from your screenshot ----
-REQUESTED_COLS = [
-    "product_L3_Description",
-    "product_L4_Description",
-    "product_L5_Description",
-    "product_L6_Description",
-    "product_L7_Description",
-    "product_L8_Description",
-    "account_L5_Description",
-    "account_L6_Description",
-    "account_L7_Description",
-    "CC_L1_Description",
-    "CC_L2_Description",
-    "CC_L3_Description",
-    "CC_L4_Description",
-    "ACCOUNT",
-    "COSTCENTER",
-    "PRODUCTLINE",
-    "SCENARIO",
-    "VERSION",
-    "Amount",
-    "YEAR",
-    "QUARTER",
+ACC_WANTED = [
+    ("Account", "Account_Code"),
+    ("L4", "L4"),
+    ("L5_Description", "L5_Description"),
+    ("L6_Description", "L6_Description"),
+    ("L7_Description", "L7_Description"),
 ]
 
-# Resolve each requested column case-insensitively against filtered_df
-available = {c.lower(): c for c in filtered_df.columns}
-keep_cols = []
-missing = []
-for c in REQUESTED_COLS:
-    lc = c.lower()
-    if lc in available:
-        keep_cols.append(available[lc])
-    else:
-        missing.append(c)
+PD_WANTED = [
+    ("ProductLine", "Line"),
+    ("L3_Description", "L3_Description"),
+    ("L4_Description", "L4_Description"),
+    ("L5_Description", "L5_Description"),
+    ("L6_Description", "L6_Description"),
+    ("L7_Description", "L7_Description"),
+    ("L8_Description", "L8_Description"),
+]
 
-if missing:
-    print("[INFO] These requested columns were NOT found (case-insensitive):", missing)
+CC_WANTED = [
+    ("COSTCENTER", "Code"),
+    ("CC_L1_Description", "L1_Description"),
+    ("CC_L2_Description", "L2_Description"),
+    ("CC_L3_Description", "L3_Description"),
+    ("CC_L4_Description", "L4_Description"),
+]
 
-filtered_df = filtered_df.select(*keep_cols)
+def prepare_fact(df, source_name):
+    d = df.alias("d")
+    joined = (
+        d.join(account_df,    F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
+         .join(product_df,    F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
+         .join(costcenter_df, F.col("d.COSTCENTER")  == F.col("cc.COSTCENTER"),  "left")
+    )
 
-# ---- 5) Report + Preview (no save) ----
-total_rows_included = filtered_df.count()
-print(f"\n✅ Total rows included (including full last account): {total_rows_included:,}")
+    joined = joined.withColumn(
+        "KPI",
+        F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
+         .when(F.col("ad.L5_Description") == "Operating Expenses", "OPEX")
+         .when(F.col("ad.L4") == "EBITDA", "EBITDA")
+    ).filter(F.col("KPI").isNotNull())
 
-print("\nIncluded accounts (first 50, ascending by count):")
-(include_df
- .orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
- .select(ACCOUNT_COL, "count", "cumulative_sum", "include_flag")
- .show(50, truncate=False))
+    fact_cols = [F.col(f"d.{c}").alias(c) for c in df.columns]
+    acc_cols  = safe_dim_cols("ad", ACC_WANTED, "account_", acc_exist)
+    pd_cols   = safe_dim_cols("pd", PD_WANTED, "product_", pd_exist)
+    cc_cols   = safe_dim_cols("cc", CC_WANTED, "CC_", cc_exist)
 
-print("\nPreview (first 20 rows):")
-filtered_df.show(20, truncate=False)
-# In Fabric/Synapse notebooks you can also use:
-# display(filtered_df.limit(20))
+    return joined.select(*fact_cols, *acc_cols, *pd_cols, *cc_cols, F.col("KPI"), F.lit(source_name).alias("FACT_SOURCE"))
