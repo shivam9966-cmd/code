@@ -1,109 +1,13 @@
+#  Save the final granular DataFrame 
+OUTPUT_PATH = "Files/SQL_DUMPS"
 
-
-import pyspark.sql.functions as F
-
-# ---------- Load tables ----------
-actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
-plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
-forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
-
-account_df    = spark.table("FPNA_FISRPT_SILVER.dbo.account")
-product_df    = spark.table("FPNA_FISRPT_SILVER.dbo.product")
-costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")
-
-# ---------- Safe selector for dim columns (avoids NullType/void) ----------
-def safe_dim_cols(df_alias, wanted, prefix):
-    if df_alias == "ad":
-        existing = set(account_df.columns)
-    elif df_alias == "pd":
-        existing = set(product_df.columns)
-    elif df_alias == "cc":
-        existing = set(costcenter_df.columns)
-    else:
-        existing = set()
-
-    cols = []
-    for src, friendly in wanted:
-        alias_name = friendly if friendly.startswith(prefix) else f"{prefix}{friendly}"
-        if src in existing:
-            cols.append(F.col(f"{df_alias}.{src}").alias(alias_name))
-        else:
-            cols.append(F.lit(None).cast("string").alias(alias_name))
-    return cols
-
-# ---------- Build per-fact frame: join dims + KPI filter + friendly names ----------
-def prepare_fact(df, source_name):
-    d  = df.alias("d")
-    ad = account_df.alias("ad")
-    pd = product_df.alias("pd")
-    cc = costcenter_df.alias("cc")
-
-    joined = (
-        d.join(ad, F.col("d.ACCOUNT")     == F.col("ad.Account"),     "left")
-         .join(pd, F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
-         .join(cc, F.col("d.COSTCENTER")  == F.col("cc.COSTCENTER"),  "left")
-    )
-
-    # KPI tagging (keep only Revenue / OPEX / EBITDA)
-    joined = joined.withColumn(
-        "KPI",
-        F.when(F.col("ad.L5_Description") == "Revenue", "Revenue")
-         .when(F.col("ad.L5_Description") == "Operating Expenses", "OPEX")
-         .when(F.col("ad.L4") == "EBITDA", "EBITDA")
-    ).filter(F.col("KPI").isNotNull())
-
-    # Choose friendly-named dim columns (add or change as you like)
-    acc_cols  = safe_dim_cols("ad", [("Account","Account_Code"),("L4","L4"),("L5_Description","L5_Description")], "Account_")
-    prod_cols = safe_dim_cols("pd", [("ProductLine","Line"),("L3_Description","L3_Description")], "Product_")
-    cc_cols   = safe_dim_cols("cc", [("COSTCENTER","Code"),("L3_Description","L3_Description")], "Cost_Center_")
-
-    # Fact columns (as-is)
-    fact_cols = [F.col(f"d.{c}").alias(c) for c in df.columns]
-
-    out = joined.select(
-        *fact_cols, *acc_cols, *prod_cols, *cc_cols,
-        F.col("KPI"),
-        F.lit(source_name).alias("FACT_SOURCE")
-    )
-    return out
-
-# ---------- Build all three ----------
-act_kpi  = prepare_fact(actual_df,   "ACTUALS")
-plan_kpi = prepare_fact(plan_df,     "PLAN")
-fcst_kpi = prepare_fact(forecast_df, "FORECAST")
-
-# ---------- Union (by name) ----------
-granular = (
-    act_kpi
-      .unionByName(plan_kpi, allowMissingColumns=True)
-      .unionByName(fcst_kpi, allowMissingColumns=True)
-)
-
-# ---------- Add Actual & Forecasted from SCENARIO like "F9_3" (FORECAST rows only) ----------
-granular = (
+(
     granular
-      .withColumn(
-          "Actual",
-          F.when(
-              (F.col("FACT_SOURCE") == "FORECAST") & F.col("SCENARIO").rlike("^F\\d+_\\d+$"),
-              F.regexp_extract("SCENARIO", "F(\\d+)_\\d+", 1)
-          )
-      )
-      .withColumn(
-          "Forecasted",
-          F.when(
-              (F.col("FACT_SOURCE") == "FORECAST") & F.col("SCENARIO").rlike("^F\\d+_\\d+$"),
-              F.regexp_extract("SCENARIO", "F\\d+_(\\d+)", 1)
-          )
-      )
+      .coalesce(1)                      # create just 1 CSV file
+      .write
+      .mode("overwrite")                # overwrite any existing file
+      .option("header", "true")         # include headers
+      .csv(OUTPUT_PATH)
 )
 
-# ---------- COUNTS ONLY (no save) ----------
-total_rows = granular.count()
-print(f"Total rows in full granular dataset (all years): {total_rows:,}")
-
-print("\nRows by FACT_SOURCE:")
-granular.groupBy("FACT_SOURCE").count().orderBy("FACT_SOURCE").show(truncate=False)
-
-print("\nRows by FACT_SOURCE and KPI:")
-granular.groupBy("FACT_SOURCE","KPI").count().orderBy("FACT_SOURCE","KPI").show(truncate=False)
+print(f" Granular KPI file saved successfully → {OUTPUT_PATH}")
