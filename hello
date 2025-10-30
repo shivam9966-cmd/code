@@ -1,3 +1,37 @@
+# Your final unioned frame from the rebuild step
+df = granular   # change if you used a different variable name
+
+expected = [
+    "product_L3_Description","product_L4_Description","product_L5_Description",
+    "product_L6_Description","product_L7_Description","product_L8_Description",
+    "account_L5_Description","account_L6_Description","account_L7_Description",
+    "CC_L1_Description","CC_L2_Description","CC_L3_Description","CC_L4_Description",
+    "ACCOUNT","COSTCENTER","PRODUCTLINE","SCENARIO","VERSION","Amount","YEAR","QUARTER"
+]
+
+print("Total cols:", len(df.columns))
+missing = [c for c in expected if c not in df.columns]
+print("Missing (should be empty):", missing)
+
+# Quick peek
+df.select(*[c for c in expected if c in df.columns]).show(10, truncate=False)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from pyspark.sql import Window, functions as F
 
 ACCOUNT_COL = "ACCOUNT"  # change if your column is named differently
