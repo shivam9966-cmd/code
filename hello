@@ -1,12 +1,19 @@
-# Load the consolidated CSV file
-consolidated_df = spark.read.csv("Files/SQL_DUMPS", header=True, inferSchema=True)
-
-# Group by Account and count the number of rows per account
+# Step 1: Count rows per account
 account_counts = consolidated_df.groupBy("ACCOUNT").count()
 
-# Show the accounts with the least number of rows (ascending order)
-account_counts.orderBy(F.col("count").asc()).show(20, truncate=False)
+# Step 2: Sort ascending (least frequent accounts first)
+account_counts = account_counts.orderBy(F.col("count").asc())
 
-# Optional: total distinct accounts
-distinct_accounts = account_counts.count()
-print(f"Total distinct accounts: {distinct_accounts:,}")
+# Step 3: Add cumulative sum column
+window_spec = Window.orderBy("count")
+account_counts = account_counts.withColumn("cumulative_sum", F.sum("count").over(window_spec))
+
+# Step 4: Filter only accounts where cumulative total <= 5000
+subset_accounts = account_counts.filter(F.col("cumulative_sum") <= 5000)
+
+# Step 5: Show the result
+subset_accounts.show(50, truncate=False)
+
+# Optional: show final cumulative total
+max_cum = subset_accounts.agg(F.max("cumulative_sum")).collect()[0][0]
+print(f"\n✅ Cumulative total rows up to these accounts: {max_cum:,}")
