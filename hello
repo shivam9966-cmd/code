@@ -1,53 +1,39 @@
-# === CONFIG ===
-BASE_DIR   = "Files/SQL_DUMPS_SMALL_ACCOUNTS"
-INPUT_PATH = f"{BASE_DIR}/sample5000"                    # adjust if the actual subpath/file differs
+# ===== CONFIG =====
+BASE_DIR     = "Files/SQL_DUMPS_SMALL_ACCOUNTS"          # <- your folder from the screenshot
 OUTPUT_DELTA = f"{BASE_DIR}/anomaly_report_sample5000_delta"
 
-# Map your hierarchies explicitly (edit names to match the consolidated file)
+# Explicit hierarchies (rename columns to match your consolidated file)
 ACCOUNT_HIER = ['acct_L1','acct_L2','acct_L3','acct_L4','acct_L5','acct_L6','acct_L7']
-PRODUCT_HIER = ['prod_L1','prod_L2','prod_L3','prod_L4']            # e.g., L1..L4
-COSTCNTR_HIER= ['cc_L1','cc_L2','cc_L3','cc_L4']                    # e.g., L1..L4
+PRODUCT_HIER = ['prod_L1','prod_L2','prod_L3','prod_L4']
+COSTCNTR_HIER= ['cc_L1','cc_L2','cc_L3','cc_L4']
+HIERARCHIES  = [ACCOUNT_HIER, PRODUCT_HIER, COSTCNTR_HIER]
 
-# If your sample also has org/country/state/dc as “contextual” dims,
-# add them into one of the hierarchies (or create a separate one).
-# Example: prepend org/country/state/dc to ACCOUNT_HIER if they conceptually belong there.
+DATE_COL     = 'date'     # change if your file uses 'txn_date' etc.
+METRIC_COL   = 'amount'   # change if it's 'value'/'revenue'
+METRIC_NAME  = 'Revenue'
+HIST_WINDOW  = 14
+K_FACTOR     = 3.0
+MIN_POINTS   = 7
+LEVEL_TAG    = "acct#**#prod#**#cc"
 
-HIERARCHIES = [ACCOUNT_HIER, PRODUCT_HIER, COSTCNTR_HIER]
-
-DATE_COL    = 'date'         # change if your column is 'txn_date' etc.
-METRIC_COL  = 'amount'       # change if it's 'value'/'revenue'
-METRIC_NAME = 'Revenue'
-HIST_WINDOW = 14
-K_FACTOR    = 3.0
-MIN_POINTS  = 7
-LEVEL_TAG   = "acct#**#prod#**#cc"   # optional label visible in `aan_level`
-
-# === LOADER (tries Delta -> Parquet -> CSV) ===
 from pyspark.sql import functions as F
 
-def _load_any(path):
-    try:
-        return spark.read.format("delta").load(path)
-    except Exception:
-        pass
-    try:
-        return spark.read.parquet(path)
-    except Exception:
-        pass
-    try:
-        return (spark.read
-                .option("header", True)
-                .option("inferSchema", True)
-                .csv(path))
-    except Exception as e:
-        raise RuntimeError(f"Could not load data from {path}. Tried delta/parquet/csv. Root error: {e}")
+# ===== LOAD (CSV-in-folder with part-00000) =====
+# Your screenshot shows `_SUCCESS` + `part-00000-...` inside BASE_DIR.
+# Use recursiveFileLookup so Spark picks the part file(s).
+sample_df = (spark.read
+             .format("csv")
+             .option("header", True)
+             .option("inferSchema", True)
+             .option("recursiveFileLookup", "true")
+             .load(BASE_DIR))
 
-# Quick directory check (uncomment to list)
+# (Optional) sanity check
 # display(dbutils.fs.ls(BASE_DIR))
+# sample_df.printSchema()
+# sample_df.limit(5).show(truncate=False)
 
-sample_df = _load_any(INPUT_PATH)
-
-# Optional sanity: ensure required columns exist (will throw if missing)
+# Ensure required columns exist
 missing = []
 for grp in HIERARCHIES:
     for c in grp:
@@ -59,7 +45,7 @@ for need in [DATE_COL, METRIC_COL]:
 if missing:
     raise ValueError(f"Missing columns in consolidated sample: {missing}")
 
-# === CALL FUNCTION ===
+# ===== RUN DETECTOR =====
 anomaly_report_df = detect_anomalies_mavg_std(
     df=sample_df,
     hierarchies=HIERARCHIES,
@@ -72,14 +58,14 @@ anomaly_report_df = detect_anomalies_mavg_std(
     level_tag=LEVEL_TAG
 )
 
-# === SAVE (Delta) ===
+# ===== SAVE (Delta) =====
 (anomaly_report_df
  .write
  .mode("overwrite")
  .format("delta")
  .save(OUTPUT_DELTA))
 
-# Optional: also register a table
+# Optional: register a table
 # spark.sql("DROP TABLE IF EXISTS analytics.anomaly_report_sample5000")
 # spark.sql(f"CREATE TABLE analytics.anomaly_report_sample5000 USING DELTA LOCATION '{OUTPUT_DELTA}'")
 
