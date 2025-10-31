@@ -1,138 +1,93 @@
-# PySpark – Moving-average anomaly detection with dynamic STD bands
-from pyspark.sql import functions as F, Window as W
+# === CONFIG ===
+BASE_DIR   = "Files/SQL_DUMPS_SMALL_ACCOUNTS"
+INPUT_PATH = f"{BASE_DIR}/sample5000"                    # adjust if the actual subpath/file differs
+OUTPUT_DELTA = f"{BASE_DIR}/anomaly_report_sample5000_delta"
 
-def detect_anomalies_mavg_std(
-    df,
-    hierarchies,            # list[list[str]]: e.g. [
-                            #   ['acct_L1','acct_L2','acct_L3','acct_L4','acct_L5','acct_L6','acct_L7'],
-                            #   ['prod_L1','prod_L2','prod_L3','prod_L4'],
-                            #   ['cc_L1','cc_L2','cc_L3','cc_L4']
-                            # ]
-    date_col,               # e.g. 'date'
-    metric_col,             # e.g. 'amount'
-    metric_name,            # e.g. 'Revenue'
-    hist_window=14,         # rolling lookback (strictly past rows)
-    k=3.0,                  # band width multiplier
-    min_points=7,           # min history points before flagging
-    level_tag=None          # optional; e.g. 'acct>prod>cc'
-):
-    """
-    Returns a DataFrame with the anomaly table format plus diagnostics:
-      aan, aan_date, predictive_date, aan_level, aan_delta,
-      value, expected, lower, upper, method
-    Logic:
-      expected = rolling mean over past 'hist_window' rows (per group)
-      band     = k * rolling stddev over same window
-      anomaly  = value < lower or value > upper, with >= min_points history
-    AAN construction:
-      - Within each hierarchy, join the levels with '>'
-      - Between hierarchies:
-          '#**#' if multiple hierarchies are present (cross-hierarchical)
-          '#*#'  if only a single hierarchy is used (same-hierarchy)
-    """
+# Map your hierarchies explicitly (edit names to match the consolidated file)
+ACCOUNT_HIER = ['acct_L1','acct_L2','acct_L3','acct_L4','acct_L5','acct_L6','acct_L7']
+PRODUCT_HIER = ['prod_L1','prod_L2','prod_L3','prod_L4']            # e.g., L1..L4
+COSTCNTR_HIER= ['cc_L1','cc_L2','cc_L3','cc_L4']                    # e.g., L1..L4
 
-    # Flatten all group columns while preserving hierarchy groups
-    group_cols = [c for grp in hierarchies for c in grp]
+# If your sample also has org/country/state/dc as “contextual” dims,
+# add them into one of the hierarchies (or create a separate one).
+# Example: prepend org/country/state/dc to ACCOUNT_HIER if they conceptually belong there.
 
-    # Rolling window over strictly past observations
-    hist_w = (
-        W.partitionBy(*group_cols)
-         .orderBy(F.col(date_col))
-         .rowsBetween(-hist_window, -1)
-    )
+HIERARCHIES = [ACCOUNT_HIER, PRODUCT_HIER, COSTCNTR_HIER]
 
-    # Moving average (expected) and dynamic standard deviation band
-    mean_hist = F.avg(F.col(metric_col)).over(hist_w)
-    std_hist  = F.stddev_samp(F.col(metric_col)).over(hist_w)
+DATE_COL    = 'date'         # change if your column is 'txn_date' etc.
+METRIC_COL  = 'amount'       # change if it's 'value'/'revenue'
+METRIC_NAME = 'Revenue'
+HIST_WINDOW = 14
+K_FACTOR    = 3.0
+MIN_POINTS  = 7
+LEVEL_TAG   = "acct#**#prod#**#cc"   # optional label visible in `aan_level`
 
-    # Avoid zero-width bands
-    floor = F.lit(1e-9)
-    band_half = F.greatest(F.coalesce(std_hist, F.lit(0.0)), floor) * F.lit(k)
+# === LOADER (tries Delta -> Parquet -> CSV) ===
+from pyspark.sql import functions as F
 
-    lower = mean_hist - band_half
-    upper = mean_hist + band_half
+def _load_any(path):
+    try:
+        return spark.read.format("delta").load(path)
+    except Exception:
+        pass
+    try:
+        return spark.read.parquet(path)
+    except Exception:
+        pass
+    try:
+        return (spark.read
+                .option("header", True)
+                .option("inferSchema", True)
+                .csv(path))
+    except Exception as e:
+        raise RuntimeError(f"Could not load data from {path}. Tried delta/parquet/csv. Root error: {e}")
 
-    # Count of available history
-    cnt_hist = F.count(F.col(metric_col)).over(hist_w)
+# Quick directory check (uncomment to list)
+# display(dbutils.fs.ls(BASE_DIR))
 
-    # % deviation from expected
-    aan_delta = F.when(
-        mean_hist.isNotNull() & (mean_hist != 0),
-        (F.col(metric_col) - mean_hist) / F.abs(mean_hist) * F.lit(100.0)
-    ).otherwise(F.lit(None).cast("double"))
+sample_df = _load_any(INPUT_PATH)
 
-    # Build hierarchy paths
-    #   - Within a hierarchy: 'L1>L2>...'
-    #   - Between hierarchies: '#**#' if cross-hierarchical, else '#*#'
-    hier_paths = []
-    for grp in hierarchies:
-        if len(grp) == 0:
-            continue
-        path = F.concat_ws(
-            ">",
-            *[F.coalesce(F.col(c).cast("string"), F.lit("∅")) for c in grp]
-        )
-        hier_paths.append(path)
+# Optional sanity: ensure required columns exist (will throw if missing)
+missing = []
+for grp in HIERARCHIES:
+    for c in grp:
+        if c not in sample_df.columns:
+            missing.append(c)
+for need in [DATE_COL, METRIC_COL]:
+    if need not in sample_df.columns:
+        missing.append(need)
+if missing:
+    raise ValueError(f"Missing columns in consolidated sample: {missing}")
 
-    # Choose inter-hierarchy separator
-    inter_sep = "#**#" if len(hier_paths) > 1 else "#*#"
+# === CALL FUNCTION ===
+anomaly_report_df = detect_anomalies_mavg_std(
+    df=sample_df,
+    hierarchies=HIERARCHIES,
+    date_col=DATE_COL,
+    metric_col=METRIC_COL,
+    metric_name=METRIC_NAME,
+    hist_window=HIST_WINDOW,
+    k=K_FACTOR,
+    min_points=MIN_POINTS,
+    level_tag=LEVEL_TAG
+)
 
-    # Combined path across hierarchies
-    # (concat_ws cannot take a dynamic sep easily; fold with concat + literal)
-    if len(hier_paths) == 0:
-        combined_path = F.lit("∅")
-    else:
-        combined_path = hier_paths[0]
-        for p in hier_paths[1:]:
-            combined_path = F.concat_ws("", combined_path, F.lit(inter_sep), p)
+# === SAVE (Delta) ===
+(anomaly_report_df
+ .write
+ .mode("overwrite")
+ .format("delta")
+ .save(OUTPUT_DELTA))
 
-    # AAN key: <metric_name>::<combined_path>
-    aan = F.concat_ws("::", F.lit(metric_name), combined_path)
+# Optional: also register a table
+# spark.sql("DROP TABLE IF EXISTS analytics.anomaly_report_sample5000")
+# spark.sql(f"CREATE TABLE analytics.anomaly_report_sample5000 USING DELTA LOCATION '{OUTPUT_DELTA}'")
 
-    # AAN level tag
-    if level_tag:
-        aan_level = F.lit(level_tag)
-    else:
-        # Default: encode number of total dimensions and show the combined path
-        aan_level = F.concat_ws(" ", F.lit(f"lvl-{len(group_cols)}"), F.lit("("), combined_path, F.lit(")"))
+# Quick peek
+try:
+    display(anomaly_report_df.orderBy(F.col("predictive_date").desc()).limit(50))
+except NameError:
+    anomaly_report_df.orderBy(F.col("predictive_date").desc()).show(50, truncate=False)
 
-    out = (
-        df
-        .withColumn("_expected", mean_hist)
-        .withColumn("_lower", lower)
-        .withColumn("_upper", upper)
-        .withColumn("_cnt_hist", cnt_hist)
-        .withColumn("_method", F.lit("mavg_std"))
-        .withColumn("aan_delta", F.round(aan_delta, 3))
-        .withColumn("aan", aan)
-        .withColumn("aan_level", aan_level)
-        .withColumn("predictive_date", F.col(date_col).cast("date"))
-        .withColumn("aan_date", F.current_date())
-        .withColumn(
-            "is_anomaly",
-            F.when(
-                (F.col("_cnt_hist") >= F.lit(min_points)) &
-                ((F.col(metric_col) < F.col("_lower")) | (F.col(metric_col) > F.col("_upper"))),
-                F.lit(1)
-            ).otherwise(F.lit(0))
-        )
-    )
-
-    # Final anomaly report selection (+ diagnostics)
-    return (
-        out
-        .filter(F.col("is_anomaly") == 1)
-        .select(
-            "aan",
-            "aan_date",
-            "predictive_date",
-            "aan_level",
-            "aan_delta",
-            F.col(metric_col).alias("value"),
-            F.col("_expected").alias("expected"),
-            F.col("_lower").alias("lower"),
-            F.col("_upper").alias("upper"),
-            F.col("_method").alias("method")
-        )
-    )
-
+print(f"Saved Delta anomaly report to: {OUTPUT_DELTA}")
+print(f"Anomaly rows: {anomaly_report_df.count()}")
