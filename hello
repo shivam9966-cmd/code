@@ -1,102 +1,87 @@
-from pyspark.sql import functions as F, Window as W
 
-def detect_anomalies_dynamic_threshold(
-    df,
-    group_cols,                 # e.g., ['org','country','state','dc','product','sku']
-    date_col,                   # e.g., 'date' / 'txn_date'
-    metric_col,                 # e.g., 'amount' / 'revenue'
-    metric_name,                # e.g., 'Revenue' (used in `aan`)
-    method="mad",               # 'mad' (robust) or 'std' (volatility)
-    hist_window=14,             # lookback points for dynamic band
-    k=3.0,                      # band width multiplier
-    min_points=7,               # min history points required
-    level_tag=None              # optional label like 'org-**-sku'
-):
-    """
-    Returns a DataFrame with the anomaly report schema:
-      aan | aan_date | predictive_date | aan_level | aan_delta | value | expected | lower | upper | method
-    """
+BASE_DIR = "Files/SQL_DUMPS_SMALL_ACCOUNTS"
+INPUT_PATH  = f"{BASE_DIR}/sample5000"                       
+OUTPUT_PATH = f"{BASE_DIR}/anomaly_report_sample5000_delta"  
 
+GROUP_COLS  = ['org','country','state','dc','product','sku']
+DATE_COL    = 'date'
+METRIC_COL  = 'amount'
+METRIC_NAME = 'Revenue'
+METHOD      = 'mad'     # or 'std'
+HIST_WINDOW = 14
+K           = 3.0
+MIN_POINTS  = 7
+LEVEL_TAG   = "org-**-sku"
+
+ALIASES = {
+    'date':   ['date','txn_date','posting_date','period_date'],
+    'amount': ['amount','value','revenue','metric','amt']
+}
+
+from pyspark.sql import functions as F
+
+def _first_present(cols, candidates):
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+def _load_any(path):
+    # Try Delta → Parquet → CSV
+    try:
+        return spark.read.format("delta").load(path)
+    except Exception:
+        pass
+    try:
+        return spark.read.parquet(path)
+    except Exception:
+        pass
+    try:
+        return (spark.read
+                .option("header", True)
+                .option("inferSchema", True)
+                .csv(path))
+    except Exception as e:
+        raise RuntimeError(f"Could not load data from {path}. Tried delta/parquet/csv. Root error: {e}")
+
+sample_df = _load_any(INPUT_PATH)
+
+use_date   = DATE_COL  if DATE_COL  in sample_df.columns else _first_present(sample_df.columns, ALIASES['date'])
+use_metric = METRIC_COL if METRIC_COL in sample_df.columns else _first_present(sample_df.columns, ALIASES['amount'])
+if use_date is None or use_metric is None:
+    raise ValueError(f"Could not resolve date/metric from aliases. Columns present: {sample_df.columns}")
+
+missing_dims = [c for c in GROUP_COLS if c not in sample_df.columns]
+if missing_dims:
+    raise ValueError(f"Missing grouping columns: {missing_dims}")
+
+
+anomaly_report_df = detect_anomalies_dynamic_threshold(
+    df=sample_df,
+    group_cols=GROUP_COLS,
+    date_col=use_date,
+    metric_col=use_metric,
+    metric_name=METRIC_NAME,
+    method=METHOD,
+    hist_window=HIST_WINDOW,
+    k=K,
+    min_points=MIN_POINTS,
+    level_tag=LEVEL_TAG
+)
+
+
+(anomaly_report_df
+ .write
+ .mode("overwrite")
+ .format("delta")
+ .save(OUTPUT_PATH))
+
+
+try:
+    display(anomaly_report_df.orderBy(F.col("predictive_date").desc()).limit(50))
+except NameError:
     
-    hist_w = (
-        W.partitionBy(*group_cols)
-         .orderBy(F.col(date_col))
-         .rowsBetween(-hist_window, -1)
-    )
+    anomaly_report_df.orderBy(F.col("predictive_date").desc()).show(50, truncate=False)
 
-    
-    median_hist = F.percentile_approx(F.col(metric_col), 0.5, 2048).over(hist_w)
-    abs_dev     = F.abs(F.col(metric_col) - median_hist)
-    mad_hist    = F.percentile_approx(abs_dev, 0.5, 2048).over(hist_w)
-
-    
-    mean_hist = F.avg(F.col(metric_col)).over(hist_w)
-    std_hist  = F.stddev_samp(F.col(metric_col)).over(hist_w)
-
-    expected = F.when(F.lower(F.lit(method))=="mad", median_hist).otherwise(mean_hist)
-
-    
-    floor = F.lit(1e-9)
-    band_half = F.when(
-        F.lower(F.lit(method))=="mad",
-        F.coalesce(mad_hist, F.lit(0.0)) * F.lit(1.4826)
-    ).otherwise(
-        F.coalesce(std_hist, F.lit(0.0))
-    )
-    band_half = F.greatest(band_half, floor) * F.lit(k)
-
-    lower = expected - band_half
-    upper = expected + band_half
-
-    
-    cnt_hist = F.count(F.col(metric_col)).over(hist_w)
-
-   
-    aan_delta = F.when(
-        expected.isNotNull() & (expected != 0),
-        (F.col(metric_col) - expected) / F.abs(expected) * F.lit(100.0)
-    ).otherwise(F.lit(None).cast("double"))
-
-    
-    group_path = F.concat_ws(">", *[F.coalesce(F.col(c).cast("string"), F.lit("∅")) for c in group_cols])
-    aan = F.concat_ws("::", F.lit(metric_name), group_path)
-    aan_level = F.lit(level_tag) if level_tag else F.concat_ws(" ", F.lit(f"lvl-{len(group_cols)}"), F.lit("("), group_path, F.lit(")"))
-
-    out = (
-        df
-        .withColumn("_expected", expected)
-        .withColumn("_lower", lower)
-        .withColumn("_upper", upper)
-        .withColumn("_cnt_hist", cnt_hist)
-        .withColumn("_method", F.lower(F.lit(method)))
-        .withColumn("aan_delta", F.round(aan_delta, 3))
-        .withColumn("aan", aan)
-        .withColumn("aan_level", aan_level)
-        .withColumn("predictive_date", F.col(date_col).cast("date"))
-        .withColumn("aan_date", F.current_date())
-        .withColumn(
-            "is_anomaly",
-            F.when(
-                (F.col("_cnt_hist") >= F.lit(min_points)) &
-                ((F.col(metric_col) < F.col("_lower")) | (F.col(metric_col) > F.col("_upper"))),
-                F.lit(1)
-            ).otherwise(F.lit(0))
-        )
-    )
-
-    return (
-        out
-        .filter(F.col("is_anomaly") == 1)
-        .select(
-            "aan",
-            "aan_date",
-            "predictive_date",
-            "aan_level",
-            "aan_delta",
-            F.col(metric_col).alias("value"),
-            F.col("_expected").alias("expected"),
-            F.col("_lower").alias("lower"),
-            F.col("_upper").alias("upper"),
-            F.col("_method").alias("method")
-        )
-    )
+print(f"Saved Delta anomaly report to: {OUTPUT_PATH}")
+print(f"Anomaly rows: {anomaly_report_df.count()}")
