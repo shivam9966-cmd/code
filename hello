@@ -1,4 +1,128 @@
-saved_df = spark.read.csv("Files/SQL_DUMPS_SMALL_ACCOUNTS", header=True, inferSchema=True)
 
-row_count = saved_df.count()
-print(f"✅ Total rows in saved CSV file: {row_count:,}")
+from pyspark.sql import functions as F, Window as W
+
+# --- FUNCTION (same as we built) ---
+def detect_anomalies_dynamic_threshold(
+    df,
+    group_cols,
+    date_col,
+    metric_col,
+    metric_name,
+    method="mad",
+    hist_window=14,
+    k=3.0,
+    min_points=7,
+    level_tag=None
+):
+    hist_w = (
+        W.partitionBy(*group_cols)
+         .orderBy(F.col(date_col))
+         .rowsBetween(-hist_window, -1)
+    )
+
+    median_hist = F.percentile_approx(F.col(metric_col), 0.5, 2048).over(hist_w)
+    abs_dev = F.abs(F.col(metric_col) - median_hist)
+    mad_hist = F.percentile_approx(abs_dev, 0.5, 2048).over(hist_w)
+
+    mean_hist = F.avg(F.col(metric_col)).over(hist_w)
+    std_hist  = F.stddev_samp(F.col(metric_col)).over(hist_w)
+
+    floor = F.lit(1e-9)
+    expected = F.when(F.lower(F.lit(method))=="mad", median_hist).otherwise(mean_hist)
+
+    band_halfwidth = F.when(
+        F.lower(F.lit(method))=="mad",
+        (F.coalesce(mad_hist, F.lit(0.0)) * F.lit(1.4826))
+    ).otherwise(
+        F.coalesce(std_hist, F.lit(0.0))
+    )
+    band_halfwidth = F.greatest(band_halfwidth, floor) * F.lit(k)
+
+    lower = expected - band_halfwidth
+    upper = expected + band_halfwidth
+    cnt_hist = F.count(F.col(metric_col)).over(hist_w)
+
+    aan_delta = F.when(
+        expected.isNotNull() & (expected != 0),
+        (F.col(metric_col) - expected) / F.abs(expected) * F.lit(100.0)
+    ).otherwise(F.lit(None).cast("double"))
+
+    group_path = F.concat_ws(">", *[F.coalesce(F.col(c).cast("string"), F.lit("∅")) for c in group_cols])
+    aan = F.concat_ws("::", F.lit(metric_name), group_path)
+
+    if level_tag:
+        aan_level = F.lit(level_tag)
+    else:
+        aan_level = F.concat_ws(" ", F.lit(f"lvl-{len(group_cols)}"), F.lit("("), group_path, F.lit(")"))
+
+    out = (
+        df
+        .withColumn("_expected", expected)
+        .withColumn("_lower", lower)
+        .withColumn("_upper", upper)
+        .withColumn("_cnt_hist", cnt_hist)
+        .withColumn("_method", F.lower(F.lit(method)))
+        .withColumn("aan_delta", F.round(aan_delta, 3))
+        .withColumn("aan", aan)
+        .withColumn("aan_level", aan_level)
+        .withColumn("predictive_date", F.col(date_col).cast("date"))
+        .withColumn("aan_date", F.current_date())
+        .withColumn(
+            "is_anomaly",
+            F.when(
+                (F.col("_cnt_hist") >= F.lit(min_points)) &
+                ((F.col(metric_col) < F.col("_lower")) | (F.col(metric_col) > F.col("_upper"))),
+                F.lit(1)
+            ).otherwise(F.lit(0))
+        )
+    )
+
+    return (
+        out
+        .filter(F.col("is_anomaly") == 1)
+        .select(
+            "aan",
+            "aan_date",
+            "predictive_date",
+            "aan_level",
+            "aan_delta",
+            F.col(metric_col).alias("value"),
+            F.col("_expected").alias("expected"),
+            F.col("_lower").alias("lower"),
+            F.col("_upper").alias("upper"),
+            F.col("_method").alias("method")
+        )
+    )
+
+# --- CONFIG (edit these if your column names differ) ---
+GROUP_COLS = ['org','country','state','dc','product','sku']
+DATE_COL   = 'date'
+METRIC_COL = 'amount'
+METRIC_NAME = 'Revenue'          # shows in `aan`
+METHOD = 'mad'                   # 'mad' or 'std'
+HIST_WINDOW = 14                 # lookback points
+K = 3.0                          # sensitivity
+MIN_POINTS = 7
+LEVEL_TAG = "org-**-sku"         # optional
+
+# --- CALL ON YOUR 5,000-ROW SAMPLE ---
+anomaly_report_df = detect_anomalies_dynamic_threshold(
+    df=sample5000_df,            # <— your sample dataframe
+    group_cols=GROUP_COLS,
+    date_col=DATE_COL,
+    metric_col=METRIC_COL,
+    metric_name=METRIC_NAME,
+    method=METHOD,
+    hist_window=HIST_WINDOW,
+    k=K,
+    min_points=MIN_POINTS,
+    level_tag=LEVEL_TAG
+)
+
+# Preview
+display(anomaly_report_df.orderBy(F.col("predictive_date").desc()).limit(50))
+
+# (Optional) Save to Lakehouse / storage
+# anomaly_report_df.write.mode("overwrite").format("delta").saveAsTable("analytics.anomaly_report_sample5000")
+# or to a path:
+# anomaly_report_df.write.mode("overwrite").parquet("Files/outputs/anomaly_report_sample5000.parquet")
