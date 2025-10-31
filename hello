@@ -1,51 +1,60 @@
 # ===== CONFIG =====
-BASE_DIR     = "Files/SQL_DUMPS_SMALL_ACCOUNTS"          # <- your folder from the screenshot
+BASE_DIR     = "Files/SQL_DUMPS_SMALL_ACCOUNTS"
 OUTPUT_DELTA = f"{BASE_DIR}/anomaly_report_sample5000_delta"
 
-# Explicit hierarchies (rename columns to match your consolidated file)
-ACCOUNT_HIER = ['acct_L1','acct_L2','acct_L3','acct_L4','acct_L5','acct_L6','acct_L7']
-PRODUCT_HIER = ['prod_L1','prod_L2','prod_L3','prod_L4']
-COSTCNTR_HIER= ['cc_L1','cc_L2','cc_L3','cc_L4']
+# Hierarchies aligned to your screenshot
+PRODUCT_HIER = [
+    "product_L3_Description",
+    "product_L4_Description",
+    "product_L5_Description",
+    "product_L6_Description",
+    "product_L7_Description",
+    "product_L8_Description"
+]
+
+ACCOUNT_HIER = [
+    "account_L5_Description",
+    "account_L6_Description",
+    "account_L7_Description"
+]
+
+COSTCNTR_HIER = [
+    "CC_L1_Description",
+    "CC_L2_Description",
+    "CC_L3_Description",
+    "CC_L4_Description"
+]
+
 HIERARCHIES  = [ACCOUNT_HIER, PRODUCT_HIER, COSTCNTR_HIER]
 
-DATE_COL     = 'date'     # change if your file uses 'txn_date' etc.
-METRIC_COL   = 'amount'   # change if it's 'value'/'revenue'
-METRIC_NAME  = 'Revenue'
-HIST_WINDOW  = 14
+DATE_COL     = "YEAR"       # proxy for time since file uses YEAR/QUARTER
+METRIC_COL   = "Amount"
+METRIC_NAME  = "Revenue"
+HIST_WINDOW  = 4            # since YEAR is coarse, you can also group by QUARTER if needed
 K_FACTOR     = 3.0
-MIN_POINTS   = 7
+MIN_POINTS   = 3
 LEVEL_TAG    = "acct#**#prod#**#cc"
 
 from pyspark.sql import functions as F
 
-# ===== LOAD (CSV-in-folder with part-00000) =====
-# Your screenshot shows `_SUCCESS` + `part-00000-...` inside BASE_DIR.
-# Use recursiveFileLookup so Spark picks the part file(s).
-sample_df = (spark.read
-             .format("csv")
-             .option("header", True)
-             .option("inferSchema", True)
-             .option("recursiveFileLookup", "true")
-             .load(BASE_DIR))
+# ===== LOAD CSV-in-FOLDER =====
+sample_df = (
+    spark.read
+        .format("csv")
+        .option("header", True)
+        .option("inferSchema", True)
+        .option("recursiveFileLookup", "true")
+        .load(BASE_DIR)
+)
 
-# (Optional) sanity check
-# display(dbutils.fs.ls(BASE_DIR))
-# sample_df.printSchema()
-# sample_df.limit(5).show(truncate=False)
+# ===== FILTER TO REQUIRED COLUMNS =====
+required_cols = PRODUCT_HIER + ACCOUNT_HIER + COSTCNTR_HIER + [
+    "ACCOUNT", "COSTCENTER", "PRODUCTLINE", "SCENARIO", "VERSION",
+    "Amount", "YEAR", "QUARTER"
+]
+sample_df = sample_df.select([c for c in required_cols if c in sample_df.columns])
 
-# Ensure required columns exist
-missing = []
-for grp in HIERARCHIES:
-    for c in grp:
-        if c not in sample_df.columns:
-            missing.append(c)
-for need in [DATE_COL, METRIC_COL]:
-    if need not in sample_df.columns:
-        missing.append(need)
-if missing:
-    raise ValueError(f"Missing columns in consolidated sample: {missing}")
-
-# ===== RUN DETECTOR =====
+# ===== CALL FUNCTION =====
 anomaly_report_df = detect_anomalies_mavg_std(
     df=sample_df,
     hierarchies=HIERARCHIES,
@@ -58,22 +67,13 @@ anomaly_report_df = detect_anomalies_mavg_std(
     level_tag=LEVEL_TAG
 )
 
-# ===== SAVE (Delta) =====
+# ===== SAVE OUTPUT =====
 (anomaly_report_df
  .write
  .mode("overwrite")
  .format("delta")
  .save(OUTPUT_DELTA))
 
-# Optional: register a table
-# spark.sql("DROP TABLE IF EXISTS analytics.anomaly_report_sample5000")
-# spark.sql(f"CREATE TABLE analytics.anomaly_report_sample5000 USING DELTA LOCATION '{OUTPUT_DELTA}'")
-
-# Quick peek
-try:
-    display(anomaly_report_df.orderBy(F.col("predictive_date").desc()).limit(50))
-except NameError:
-    anomaly_report_df.orderBy(F.col("predictive_date").desc()).show(50, truncate=False)
-
+display(anomaly_report_df.limit(50))
 print(f"Saved Delta anomaly report to: {OUTPUT_DELTA}")
-print(f"Anomaly rows: {anomaly_report_df.count()}")
+print(f"Rows flagged as anomalies: {anomaly_report_df.count()}")
