@@ -1,8 +1,7 @@
-# ====== CONFIG ======
+
 BASE_DIR     = "Files/SQL_DUMPS_SMALL_ACCOUNTS"
 OUTPUT_DELTA = f"{BASE_DIR}/anomaly_report_rev_opex_ebitda_delta"
 
-# Columns exactly as per your screenshot (only these will be read/used)
 PRODUCT_HIER = [
     "product_L3_Description","product_L4_Description","product_L5_Description",
     "product_L6_Description","product_L7_Description","product_L8_Description"
@@ -15,8 +14,7 @@ REQUIRED_COLS = PRODUCT_HIER + ACCOUNT_HIER + COSTCNTR_HIER + [
     "Amount","YEAR","QUARTER"
 ]
 
-# Build a synthetic date from YEAR+QUARTER → first day of quarter
-# (Q1→Jan, Q2→Apr, Q3→Jul, Q4→Oct)
+
 from pyspark.sql import functions as F
 
 q_start_month = F.when(F.col("QUARTER")==1, F.lit(1)) \
@@ -24,7 +22,7 @@ q_start_month = F.when(F.col("QUARTER")==1, F.lit(1)) \
                  .when(F.col("QUARTER")==3, F.lit(7)) \
                  .otherwise(F.lit(10))
 
-# ====== LOAD CSV-IN-FOLDER (handles _SUCCESS + part-00000) ======
+
 raw_df = (spark.read
           .format("csv")
           .option("header", True)
@@ -34,17 +32,16 @@ raw_df = (spark.read
 
 df = raw_df.select([c for c in REQUIRED_COLS if c in raw_df.columns])
 
-# Create predictive date
 df = df.withColumn("pred_date",
                    F.to_date(F.concat_ws("-",
                                          F.col("YEAR").cast("int"),
                                          q_start_month,
                                          F.lit(1)), "yyyy-M-d"))
 
-# ====== Define hierarchies for AAN construction (cross-hierarchy separators) ======
+
 HIERARCHIES = [ACCOUNT_HIER, PRODUCT_HIER, COSTCNTR_HIER]
 
-# ====== Helper to run for one KPI label in account_L5_Description ======
+
 def run_kpi(label):
     kpi_df = df.filter(F.col("account_L5_Description") == F.lit(label))
     return detect_anomalies_mavg_std_report(
@@ -62,19 +59,17 @@ rev_anoms    = run_kpi("Revenue")
 opex_anoms   = run_kpi("OPEX")
 ebitda_anoms = run_kpi("EBITDA")
 
-# ====== UNION ALL (same schema) ======
+
 from functools import reduce
 from pyspark.sql import DataFrame
 combined_anoms = reduce(DataFrame.unionByName, [rev_anoms, opex_anoms, ebitda_anoms])
 
-# ====== SAVE (Delta) ======
 (combined_anoms
  .write
  .mode("overwrite")
  .format("delta")
  .save(OUTPUT_DELTA))
 
-# Peek
 display(combined_anoms.orderBy(F.col("predictive_date").desc()).limit(50))
 print(f"Saved combined anomaly report to: {OUTPUT_DELTA}")
 print(f"Total anomalies across Revenue/OPEX/EBITDA: {combined_anoms.count()}")
