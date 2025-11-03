@@ -1,26 +1,146 @@
 
+
+from pyspark.sql import functions as F, Window as W
+from functools import reduce
+from pyspark.sql import DataFrame
+
+
+def detect_anomalies_mavg_std_report(
+    df,
+    account_levels,
+    product_levels,
+    costcenter_levels,
+    date_col,
+    metric_col,
+    metric_name,
+    hist_window=14,
+    k=3.0,
+    min_points=7,
+):
+    # helpers for joining strings
+    def _join_levels_with_value(cols):
+        return F.concat_ws("-*-", *[F.coalesce(F.col(c).cast("string"), F.lit("∅")) for c in cols])
+
+    def _join_levels_with_name(cols):
+        return F.concat_ws("-*-", *[F.lit(c.replace("_Description", "")) for c in cols])
+
+    # hierarchy blocks
+    acct_value_block  = _join_levels_with_value(account_levels)
+    prod_value_block  = _join_levels_with_value(product_levels)
+    cc_value_block    = _join_levels_with_value(costcenter_levels)
+
+    acct_name_block   = _join_levels_with_name(account_levels)
+    prod_name_block   = _join_levels_with_name(product_levels)
+    cc_name_block     = _join_levels_with_name(costcenter_levels)
+
+    # prefixed & terminated with "-*-"
+    acct_level_str = F.concat_ws("", F.lit("Account-*-"), acct_name_block, F.lit("-*-"))
+    prod_level_str = F.concat_ws("", F.lit("ProductLine-*-"), prod_name_block, F.lit("-*-"))
+    cc_level_str   = F.concat_ws("", F.lit("CostCenter-*-"), cc_name_block, F.lit("-*-"))
+
+    acct_value_str = F.concat_ws("", acct_value_block, F.lit("-*-"))
+    prod_value_str = F.concat_ws("", prod_value_block, F.lit("-*-"))
+    cc_value_str   = F.concat_ws("", cc_value_block, F.lit("-*-"))
+
+    # join hierarchies with "-**-"
+    aan_level_expr = F.concat_ws("", acct_level_str, F.lit("-**-"),
+                                 prod_level_str, F.lit("-**-"), cc_level_str)
+    aan_value_expr = F.concat_ws("", acct_value_str, F.lit("-**-"),
+                                 prod_value_str, F.lit("-**-"), cc_value_str)
+
+    # partition by full depth
+    group_cols = account_levels + product_levels + costcenter_levels
+    hist_w = (
+        W.partitionBy(*group_cols)
+         .orderBy(F.col(date_col))
+         .rowsBetween(-hist_window, -1)
+    )
+
+    mean_hist = F.avg(F.col(metric_col)).over(hist_w)
+    std_hist  = F.stddev_samp(F.col(metric_col)).over(hist_w)
+    floor = F.lit(1e-9)
+    band_half = F.greatest(F.coalesce(std_hist, F.lit(0.0)), floor) * F.lit(k)
+    lower = mean_hist - band_half
+    upper = mean_hist + band_half
+    cnt_hist = F.count(F.col(metric_col)).over(hist_w)
+
+    delta_num = F.when(
+        mean_hist.isNotNull() & (mean_hist != 0),
+        (F.col(metric_col) - mean_hist) / F.abs(mean_hist) * F.lit(100.0)
+    ).otherwise(F.lit(None).cast("double"))
+
+    full_value_path = F.concat_ws("-**-", acct_value_block, prod_value_block, cc_value_block)
+    aan_expr = F.concat_ws("::", F.lit(metric_name), full_value_path)
+
+    out = (
+        df
+        .withColumn("predictive_date", F.col(date_col).cast("date"))
+        .withColumn("aan_date", F.current_date())
+        .withColumn("_expected", mean_hist)
+        .withColumn("_lower", lower)
+        .withColumn("_upper", upper)
+        .withColumn("_cnt_hist", cnt_hist)
+        .withColumn("_delta_num", F.round(delta_num, 3))
+        .withColumn("aan_level", aan_level_expr)
+        .withColumn("aan_value", aan_value_expr)
+        .withColumn("aan_name", F.lit(metric_name))
+        .withColumn("aan", aan_expr)
+        .withColumn(
+            "is_anomaly",
+            ((F.col(metric_col) < lower) | (F.col(metric_col) > upper)) &
+            (cnt_hist >= F.lit(min_points))
+        )
+    )
+
+    rank_w = W.partitionBy("predictive_date", "aan_name").orderBy(F.desc(F.abs(F.col("_delta_num"))))
+    out = out.withColumn("_rank", F.dense_rank().over(rank_w))
+
+    result = (
+        out.filter(F.col("is_anomaly"))
+           .select(
+               "aan",
+               "aan_date",
+               "predictive_date",
+               "aan_level",
+               F.format_string("%.3f", F.col("_delta_num")).alias("aan_delta"),
+               F.col("_expected").alias("aan_attr"),
+               F.col("_rank").cast("string").alias("aan_ranking"),
+               F.concat_ws(
+                   " ",
+                   F.col("aan_name"), F.lit("anomaly:"),
+                   F.lit("deviation"), F.format_string("%.1f%%", F.col("_delta_num")),
+                   F.lit("at"), F.col("aan_value"),
+                   F.lit("on"), F.date_format(F.col("predictive_date"), "yyyy-MM-dd"),
+                   F.lit("vs baseline"), F.format_string("%.2f", F.col("_expected")),
+                   F.lit("(band:"), F.format_string("%.2f", F.col("_lower")),
+                   F.lit("to"), F.format_string("%.2f", F.col("_upper")), F.lit(")")
+               ).alias("inference"),
+               "aan_name",
+               "aan_value",
+               F.concat_ws("|",
+                   F.date_format(F.col("predictive_date"), "yyyy-MM-dd"),
+                   F.col("aan_name"),
+                   F.col("aan")
+               ).alias("anomaly_id"),
+               F.lit("Point Anomaly").alias("anomaly_type"),
+               F.lit(False).alias("rca_present"),
+               F.lit(False).alias("impact_present")
+           )
+    )
+    return result
+
+
+
 BASE_DIR     = "Files/SQL_DUMPS_SMALL_ACCOUNTS"
-OUTPUT_DELTA = f"{BASE_DIR}/anomaly_report_rev_opex_ebitda_delta"
 
-PRODUCT_HIER = [
-    "product_L3_Description","product_L4_Description","product_L5_Description",
-    "product_L6_Description","product_L7_Description","product_L8_Description"
+PRODUCT_LEVELS   = ["product_L3_Description","product_L4_Description","product_L5_Description",
+                    "product_L6_Description","product_L7_Description","product_L8_Description"]
+ACCOUNT_LEVELS   = ["account_L5_Description","account_L6_Description","account_L7_Description"]
+COSTCENTER_LEVELS= ["CC_L1_Description","CC_L2_Description","CC_L3_Description","CC_L4_Description"]
+
+REQUIRED_COLS = PRODUCT_LEVELS + ACCOUNT_LEVELS + COSTCENTER_LEVELS + [
+    "ACCOUNT","COSTCENTER","PRODUCTLINE","SCENARIO","VERSION","Amount","YEAR","QUARTER"
 ]
-ACCOUNT_HIER = ["account_L5_Description","account_L6_Description","account_L7_Description"]
-COSTCNTR_HIER= ["CC_L1_Description","CC_L2_Description","CC_L3_Description","CC_L4_Description"]
-
-REQUIRED_COLS = PRODUCT_HIER + ACCOUNT_HIER + COSTCNTR_HIER + [
-    "ACCOUNT","COSTCENTER","PRODUCTLINE","SCENARIO","VERSION",
-    "Amount","YEAR","QUARTER"
-]
-
-
-from pyspark.sql import functions as F
-
-q_start_month = F.when(F.col("QUARTER")==1, F.lit(1)) \
-                 .when(F.col("QUARTER")==2, F.lit(4)) \
-                 .when(F.col("QUARTER")==3, F.lit(7)) \
-                 .otherwise(F.lit(10))
 
 
 raw_df = (spark.read
@@ -32,44 +152,37 @@ raw_df = (spark.read
 
 df = raw_df.select([c for c in REQUIRED_COLS if c in raw_df.columns])
 
-df = df.withColumn("pred_date",
-                   F.to_date(F.concat_ws("-",
-                                         F.col("YEAR").cast("int"),
-                                         q_start_month,
-                                         F.lit(1)), "yyyy-M-d"))
 
-
-HIERARCHIES = [ACCOUNT_HIER, PRODUCT_HIER, COSTCNTR_HIER]
+q_start_month = F.when(F.col("QUARTER").cast("int")==1, F.lit(1)) \
+                 .when(F.col("QUARTER").cast("int")==2, F.lit(4)) \
+                 .when(F.col("QUARTER").cast("int")==3, F.lit(7)) \
+                 .otherwise(F.lit(10))
+df = df.withColumn(
+    "pred_date",
+    F.to_date(F.concat_ws("-", F.col("YEAR").cast("int"), q_start_month, F.lit(1)), "yyyy-M-d")
+)
 
 
 def run_kpi(label):
     kpi_df = df.filter(F.col("account_L5_Description") == F.lit(label))
     return detect_anomalies_mavg_std_report(
-        df        = kpi_df,
-        hierarchies = HIERARCHIES,
-        date_col  = "pred_date",
-        metric_col= "Amount",
-        metric_name = label,
-        hist_window = 14,   # tune as needed
-        k           = 3.0,
-        min_points  = 7,
+        df=kpi_df,
+        account_levels=ACCOUNT_LEVELS,
+        product_levels=PRODUCT_LEVELS,
+        costcenter_levels=COSTCENTER_LEVELS,
+        date_col="pred_date",
+        metric_col="Amount",
+        metric_name=label,
+        hist_window=14,
+        k=3.0,
+        min_points=7,
     )
 
 rev_anoms    = run_kpi("Revenue")
 opex_anoms   = run_kpi("OPEX")
 ebitda_anoms = run_kpi("EBITDA")
 
-
-from functools import reduce
-from pyspark.sql import DataFrame
 combined_anoms = reduce(DataFrame.unionByName, [rev_anoms, opex_anoms, ebitda_anoms])
 
-(combined_anoms
- .write
- .mode("overwrite")
- .format("delta")
- .save(OUTPUT_DELTA))
-
-display(combined_anoms.orderBy(F.col("predictive_date").desc()).limit(50))
-print(f"Saved combined anomaly report to: {OUTPUT_DELTA}")
+display(combined_anoms.orderBy(F.col("predictive_date").desc()).limit(100))
 print(f"Total anomalies across Revenue/OPEX/EBITDA: {combined_anoms.count()}")
