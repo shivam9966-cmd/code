@@ -1,10 +1,18 @@
-
+# ================================================================
+#  MOVING AVERAGE ANOMALY DETECTION (EBITDA, OPEX, REVENUE)
+#  - Dynamic STD threshold
+#  - aan_level/aan_value hierarchical cleanup
+#  - Natural-language inference
+#  - NO SAVE — only display results
+# ================================================================
 
 from pyspark.sql import functions as F, Window as W
 from functools import reduce
 from pyspark.sql import DataFrame
 
-
+# ================================================================
+# FUNCTION
+# ================================================================
 def detect_anomalies_mavg_std_report(
     df,
     account_levels,
@@ -17,38 +25,44 @@ def detect_anomalies_mavg_std_report(
     k=3.0,
     min_points=7,
 ):
-    # helpers for joining strings
-    def _join_levels_with_value(cols):
-        return F.concat_ws("-*-", *[F.coalesce(F.col(c).cast("string"), F.lit("∅")) for c in cols])
+    # ----- Helper: join non-null descriptions -----
+    def join_non_null(cols):
+        exprs = [F.col(c).cast("string") for c in cols]
+        return F.concat_ws("-*-", *exprs)
 
-    def _join_levels_with_name(cols):
-        return F.concat_ws("-*-", *[F.lit(c.replace("_Description", "")) for c in cols])
+    def join_level_names(cols):
+        names = [c.replace("_Description", "") for c in cols]
+        return F.concat_ws("-*-", *[F.lit(n) for n in names])
 
-    # hierarchy blocks
-    acct_value_block  = _join_levels_with_value(account_levels)
-    prod_value_block  = _join_levels_with_value(product_levels)
-    cc_value_block    = _join_levels_with_value(costcenter_levels)
+    # Build value and name paths (skip None gracefully)
+    acct_values  = join_non_null(account_levels)
+    prod_values  = join_non_null(product_levels)
+    cc_values    = join_non_null(costcenter_levels)
 
-    acct_name_block   = _join_levels_with_name(account_levels)
-    prod_name_block   = _join_levels_with_name(product_levels)
-    cc_name_block     = _join_levels_with_name(costcenter_levels)
+    acct_levels  = join_level_names(account_levels)
+    prod_levels  = join_level_names(product_levels)
+    cc_levels    = join_level_names(costcenter_levels)
 
-    # prefixed & terminated with "-*-"
-    acct_level_str = F.concat_ws("", F.lit("Account-*-"), acct_name_block, F.lit("-*-"))
-    prod_level_str = F.concat_ws("", F.lit("ProductLine-*-"), prod_name_block, F.lit("-*-"))
-    cc_level_str   = F.concat_ws("", F.lit("CostCenter-*-"), cc_name_block, F.lit("-*-"))
+    # Prefix hierarchy blocks and join with "-**-"
+    aan_level_expr = F.concat_ws(
+        "-**-",
+        F.concat_ws("-*-", F.lit("Account"), acct_levels),
+        F.concat_ws("-*-", F.lit("ProductLine"), prod_levels),
+        F.concat_ws("-*-", F.lit("CostCenter"), cc_levels)
+    )
 
-    acct_value_str = F.concat_ws("", acct_value_block, F.lit("-*-"))
-    prod_value_str = F.concat_ws("", prod_value_block, F.lit("-*-"))
-    cc_value_str   = F.concat_ws("", cc_value_block, F.lit("-*-"))
+    aan_value_expr = F.concat_ws(
+        "-**-",
+        acct_values,
+        prod_values,
+        cc_values
+    )
 
-    # join hierarchies with "-**-"
-    aan_level_expr = F.concat_ws("", acct_level_str, F.lit("-**-"),
-                                 prod_level_str, F.lit("-**-"), cc_level_str)
-    aan_value_expr = F.concat_ws("", acct_value_str, F.lit("-**-"),
-                                 prod_value_str, F.lit("-**-"), cc_value_str)
+    # Trim trailing separators if any
+    aan_level_expr = F.regexp_replace(aan_level_expr, r"(-\*\*-$)|(-\*-$)", "")
+    aan_value_expr = F.regexp_replace(aan_value_expr, r"(-\*\*-$)|(-\*-$)", "")
 
-    # partition by full depth
+    # Partition by full depth
     group_cols = account_levels + product_levels + costcenter_levels
     hist_w = (
         W.partitionBy(*group_cols)
@@ -69,8 +83,7 @@ def detect_anomalies_mavg_std_report(
         (F.col(metric_col) - mean_hist) / F.abs(mean_hist) * F.lit(100.0)
     ).otherwise(F.lit(None).cast("double"))
 
-    full_value_path = F.concat_ws("-**-", acct_value_block, prod_value_block, cc_value_block)
-    aan_expr = F.concat_ws("::", F.lit(metric_name), full_value_path)
+    aan_expr = F.concat_ws("::", F.lit(metric_name), aan_value_expr)
 
     out = (
         df
@@ -92,8 +105,23 @@ def detect_anomalies_mavg_std_report(
         )
     )
 
+    # Ranking and inference
     rank_w = W.partitionBy("predictive_date", "aan_name").orderBy(F.desc(F.abs(F.col("_delta_num"))))
     out = out.withColumn("_rank", F.dense_rank().over(rank_w))
+
+    # Clean, human-readable inference
+    inference_expr = F.concat_ws(
+        " ",
+        F.lit(metric_name), F.lit("anomaly: deviation"),
+        F.format_string("%.1f%%", F.col("_delta_num")),
+        F.lit("at Account="), F.col(account_levels[-1]),
+        F.lit(", ProductLine="), F.col(product_levels[-1]),
+        F.lit(", CostCenter="), F.col(costcenter_levels[-1]),
+        F.lit("on"), F.date_format(F.col("predictive_date"), "yyyy-MM-dd"),
+        F.lit("vs baseline"), F.format_string("%.2f", F.col("_expected")),
+        F.lit("(band:"), F.format_string("%.2f", F.col("_lower")),
+        F.lit("to"), F.format_string("%.2f", F.col("_upper")), F.lit(")")
+    )
 
     result = (
         out.filter(F.col("is_anomaly"))
@@ -105,16 +133,7 @@ def detect_anomalies_mavg_std_report(
                F.format_string("%.3f", F.col("_delta_num")).alias("aan_delta"),
                F.col("_expected").alias("aan_attr"),
                F.col("_rank").cast("string").alias("aan_ranking"),
-               F.concat_ws(
-                   " ",
-                   F.col("aan_name"), F.lit("anomaly:"),
-                   F.lit("deviation"), F.format_string("%.1f%%", F.col("_delta_num")),
-                   F.lit("at"), F.col("aan_value"),
-                   F.lit("on"), F.date_format(F.col("predictive_date"), "yyyy-MM-dd"),
-                   F.lit("vs baseline"), F.format_string("%.2f", F.col("_expected")),
-                   F.lit("(band:"), F.format_string("%.2f", F.col("_lower")),
-                   F.lit("to"), F.format_string("%.2f", F.col("_upper")), F.lit(")")
-               ).alias("inference"),
+               inference_expr.alias("inference"),
                "aan_name",
                "aan_value",
                F.concat_ws("|",
@@ -130,6 +149,9 @@ def detect_anomalies_mavg_std_report(
     return result
 
 
+# ================================================================
+# CALLER (EBITDA + OPEX + REVENUE, NO SAVE)
+# ================================================================
 
 BASE_DIR     = "Files/SQL_DUMPS_SMALL_ACCOUNTS"
 
@@ -142,7 +164,7 @@ REQUIRED_COLS = PRODUCT_LEVELS + ACCOUNT_LEVELS + COSTCENTER_LEVELS + [
     "ACCOUNT","COSTCENTER","PRODUCTLINE","SCENARIO","VERSION","Amount","YEAR","QUARTER"
 ]
 
-
+# ---- Load CSV folder ----
 raw_df = (spark.read
           .format("csv")
           .option("header", True)
@@ -152,7 +174,7 @@ raw_df = (spark.read
 
 df = raw_df.select([c for c in REQUIRED_COLS if c in raw_df.columns])
 
-
+# ---- Synthetic date (YEAR + QUARTER) ----
 q_start_month = F.when(F.col("QUARTER").cast("int")==1, F.lit(1)) \
                  .when(F.col("QUARTER").cast("int")==2, F.lit(4)) \
                  .when(F.col("QUARTER").cast("int")==3, F.lit(7)) \
@@ -162,7 +184,7 @@ df = df.withColumn(
     F.to_date(F.concat_ws("-", F.col("YEAR").cast("int"), q_start_month, F.lit(1)), "yyyy-M-d")
 )
 
-
+# ---- Run for each KPI ----
 def run_kpi(label):
     kpi_df = df.filter(F.col("account_L5_Description") == F.lit(label))
     return detect_anomalies_mavg_std_report(
@@ -178,11 +200,11 @@ def run_kpi(label):
         min_points=7,
     )
 
-rev_anoms    = run_kpi("Revenue")
-opex_anoms   = run_kpi("OPEX")
 ebitda_anoms = run_kpi("EBITDA")
+opex_anoms   = run_kpi("OPEX")
+rev_anoms    = run_kpi("Revenue")
 
-combined_anoms = reduce(DataFrame.unionByName, [rev_anoms, opex_anoms, ebitda_anoms])
+combined_anoms = reduce(DataFrame.unionByName, [ebitda_anoms, opex_anoms, rev_anoms])
 
 display(combined_anoms.orderBy(F.col("predictive_date").desc()).limit(100))
-print(f"Total anomalies across Revenue/OPEX/EBITDA: {combined_anoms.count()}")
+print(f"Total anomalies across EBITDA, OPEX, and Revenue: {combined_anoms.count()}")
