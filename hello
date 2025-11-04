@@ -1,13 +1,51 @@
-import pyspark.sql.functions as F
+import pandas as pd
+import numpy as np
 
-# 1️⃣ Load the Account table
-account_df = spark.table("FPNA_FISRPT_SILVER.dbo.account")
+# ---- configurable columns (edit if your names differ) ----
+COL_YEAR      = "year"
+COL_SCENARIO  = "scenario"
+COL_VERSION   = "version"
+COL_PERIOD    = "period"
+COL_L4        = "L4"
+COL_AMOUNT    = "amount"
+# ----------------------------------------------------------
 
-# 2️⃣ Filter for rows where L4 == 'EBITDA'
-ebitda_df = account_df.filter(F.col("L4") == "EBITDA")
+df = granular_df.copy()  # or actuals_df
 
-# 3️⃣ Show unique values from L5 column
-unique_l5 = ebitda_df.select("L5_Description").distinct()
+# FY25 filter (optional)
+df_fy = df[df[COL_YEAR].isin([2025, 'FY25'])].copy() if COL_YEAR in df.columns else df.copy()
 
-# Display results
-unique_l5.show(truncate=False)
+# tag buckets
+l4u = df_fy[COL_L4].astype(str).str.upper()
+is_opex    = l4u.str.contains(r"\bOPEX\b|OPERATING EXPENSE", na=False)
+is_revenue = l4u.str.contains(r"\bREVENUE\b|SALES|INCOME", na=False) & ~is_opex
+
+df_fy["bucket"] = np.select([is_opex, is_revenue], ["OPEX","REVENUE"], default="OTHER")
+
+group_cols = [COL_SCENARIO, COL_VERSION]  # tweak as needed
+
+tbl = (df_fy
+       .groupby(group_cols + ["bucket"], dropna=False)[COL_AMOUNT]
+       .sum()
+       .unstack("bucket")
+       .reindex(columns=["REVENUE","OPEX"])
+       .fillna(0.0))
+
+tbl["EBITDA"] = tbl["REVENUE"] - tbl["OPEX"]
+
+print("\n=== Totals (by scenario/version) ===")
+print(tbl.reset_index().to_string(index=False))
+
+# Q1–Q4 (optional, if you have a date-like 'period')
+if COL_PERIOD in df_fy.columns:
+    per = pd.to_datetime(df_fy[COL_PERIOD], errors="coerce")
+    df_fy["qtr"] = "Q" + per.dt.quarter.astype("Int64").astype(str)
+    tbl_q = (df_fy
+             .groupby(group_cols + ["qtr","bucket"], dropna=False)[COL_AMOUNT]
+             .sum()
+             .unstack("bucket")
+             .reindex(columns=["REVENUE","OPEX"])
+             .fillna(0.0))
+    tbl_q["EBITDA"] = tbl_q["REVENUE"] - tbl_q["OPEX"]
+    print("\n=== Quarterly (by scenario/version & quarter) ===")
+    print(tbl_q.reset_index().to_string(index=False))
