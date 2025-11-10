@@ -12,35 +12,40 @@ acct = path.split("-**-")[0].split("-*-")[0]
 # ---- filter ----
 df_filt = df.filter(F.col("account_L5_Description").like(f"%{acct}%"))
 
-# ---- take all rows before target date ----
+# ---- separate current and historical ----
 df_hist = df_filt.filter(F.col("date") < F.lit(target_date))
 df_curr = df_filt.filter(F.col("date") == F.lit(target_date))
 
-# ---- compute baseline ----
-baseline = df_hist.agg(
-    F.avg("Amount").alias("mean"),
-    F.stddev("Amount").alias("std")
-).collect()[0]
+# ---- sanity checks ----
+if df_hist.count() == 0:
+    print("⚠️ No historical data found before target date.")
+if df_curr.count() == 0:
+    print("⚠️ No record found on the target date.")
+if df_hist.count() == 0 or df_curr.count() == 0:
+    display(df_filt.orderBy('date'))
+else:
+    # ---- compute baseline ----
+    baseline = df_hist.agg(
+        F.avg("Amount").alias("mean"),
+        F.stddev("Amount").alias("std")
+    ).collect()[0]
 
-mean = baseline["mean"] or 0
-std  = baseline["std"] or 0
+    mean = baseline["mean"] or 0
+    std  = baseline["std"] or 0
 
-lower, upper = mean - K_FACTOR * std, mean + K_FACTOR * std
+    lower, upper = mean - K_FACTOR * std, mean + K_FACTOR * std
+    curr = df_curr.select("Amount").collect()[0]["Amount"]
 
-# ---- current value ----
-curr = df_curr.select("Amount").collect()[0]["Amount"]
+    is_anom = curr < lower or curr > upper
+    delta_pct = ((curr - mean) / abs(mean)) * 100 if mean != 0 else 0
 
-# ---- verdict ----
-is_anom = curr < lower or curr > upper
-delta_pct = ((curr - mean) / abs(mean)) * 100 if mean != 0 else None
-
-print(f"""
-AAN: {aan_key}
-Date: {target_date}
-Current: {curr:.2f}
-Baseline mean: {mean:.2f}
-Std dev: {std:.2f}
-Band: [{lower:.2f}, {upper:.2f}]
-Δ%: {delta_pct:.2f}%
-Anomaly? {is_anom}
-""")
+    print(f"""
+    AAN: {aan_key}
+    Date: {target_date}
+    Current: {curr:.2f}
+    Baseline mean: {mean:.2f}
+    Std dev: {std:.2f}
+    Band: [{lower:.2f}, {upper:.2f}]
+    Δ%: {delta_pct:.2f}%
+    Anomaly? {is_anom}
+    """)
