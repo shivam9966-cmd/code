@@ -1,5 +1,17 @@
-# Convert Spark DataFrame (granular) to pandas and preview
-granular_pd = granular.limit(20).toPandas()
+from datetime import datetime
 
-# Display first 20 rows as pandas-style table
-display(granular_pd)
+
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+base_folder = "Files/SQL_DUMPS/FINAL_EXPORTS"
+run_folder = f"{base_folder}/Run_{timestamp}"
+
+
+granular.write.mode("errorifexists").option("header", True).csv(f"{run_folder}/granular_full")
+
+# Save small subset
+subset.write.mode("errorifexists").option("header", True).csv(f"{run_folder}/granular_subset")
+
+print(f"✅ Both datasets saved successfully under:\n📂 {run_folder}")
+print(" - granular_full → full consolidated dataset")
+print(" - granular_subset → filtered subset (~5K rows)")
