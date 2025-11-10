@@ -1,19 +1,95 @@
+# ================== ANY-ANOMALY VALIDATOR (PySpark) ==================
+# Requirements:
+#   - subset  : your 5K DataFrame (already loaded)
+#   - columns : 'date' (or castable), 'Amount',
+#               account_L5_Description, account_L6_Description, account_L7_Description,
+#               product_L3_Description ... product_L8_Description,
+#               CC_L1_Description ... CC_L4_Description
 from pyspark.sql import functions as F
 
-# ensure date is properly typed
-subset = subset.withColumn("date", F.to_date("date"))
+# -- config --
+K_FACTOR   = 2.5     # same band as detector
+LOOKBACK_N = 3       # previous 3 months for baseline
+INCLUDE_CC = False   # set True to also enforce Cost Center levels from AAN
 
-# ---- filter for March 2022 ----
-subset_march22 = subset.filter(
-    (F.year("date") == 2022) & (F.month("date") == 3)
-)
+# small helpers
+def eqi(col, val):  # equals, case-insensitive, trimmed
+    return F.lower(F.trim(F.col(col))) == F.lit((val or "").strip().lower())
 
-# ---- convert to pandas ----
-pdf_march22 = subset_march22.toPandas()
+def _tokens(block):  # split "-*-", drop empties/None
+    return [t for t in (block.split("-*-") if block else []) if t not in ("", None, "None")]
 
-# optional: sort for readability
-pdf_march22 = pdf_march22.sort_values(by=["date"], ascending=True)
+def validate_aan(aan: str, predictive_date: str):
+    """
+    aan: e.g. 'OPEX::Account-*-...-**-ProductLine-*-...-**-CostCenter-*-...'
+    predictive_date: 'YYYY-MM-DD' from anomalies table
+    """
+    # 1) parse AAN -> groups
+    try:
+        _metric, path = aan.split("::", 1)
+    except ValueError:
+        raise ValueError("Bad AAN format. Expected '<metric>::<path>'")
+    blocks = path.split("-**-")
+    acct_vals = _tokens(blocks[0] if len(blocks) > 0 else "")
+    prod_vals = _tokens(blocks[1] if len(blocks) > 1 else "")
+    cc_vals   = _tokens(blocks[2] if len(blocks) > 2 else "")
 
-# ---- preview ----
-print("✅ March 2022 subset preview — total rows:", len(pdf_march22))
-display(pdf_march22.head(20))   # in notebook this will show a table
+    # 2) ensure date type
+    df = subset.withColumn("date", F.to_date("date"))
+
+    # 3) build filters (only up to available levels)
+    acct_cols = ["account_L5_Description","account_L6_Description","account_L7_Description"]
+    prod_cols = ["product_L3_Description","product_L4_Description","product_L5_Description",
+                 "product_L6_Description","product_L7_Description","product_L8_Description"]
+    cc_cols   = ["CC_L1_Description","CC_L2_Description","CC_L3_Description","CC_L4_Description"]
+
+    cond = F.lit(True)
+    for col, val in zip(acct_cols, acct_vals): cond = cond & eqi(col, val)
+    for col, val in zip(prod_cols, prod_vals): cond = cond & eqi(col, val)
+    if INCLUDE_CC:
+        for col, val in zip(cc_cols, cc_vals): cond = cond & eqi(col, val)
+
+    slice_df = df.filter(cond)
+    if slice_df.rdd.isEmpty():
+        print("⚠️ No rows match this AAN hierarchy in the subset.")
+        return
+
+    # 4) pick the nearest available date to predictive_date
+    tgt = F.to_date(F.lit(predictive_date))
+    nearest_row = (slice_df
+                   .withColumn("diff", F.abs(F.datediff("date", tgt)))
+                   .orderBy("diff", "date")
+                   .select("date").limit(1).collect())
+    actual_date = nearest_row[0]["date"]
+
+    # 5) baseline = previous LOOKBACK_N months (by distinct months)
+    hist = (slice_df.filter(F.col("date") < F.lit(actual_date))
+                    .orderBy(F.col("date").desc())
+                    .limit(LOOKBACK_N))
+    stats = hist.agg(F.avg("Amount").alias("mean"),
+                     F.stddev("Amount").alias("std")).collect()[0]
+    mean = (stats["mean"] or 0.0); std = (stats["std"] or 0.0)
+    lower, upper = mean - K_FACTOR*std, mean + K_FACTOR*std
+
+    # 6) current value on actual_date
+    cur_row = slice_df.filter(F.col("date") == F.lit(actual_date)).select("Amount").limit(1).collect()
+    if not cur_row:
+        print("⚠️ No row on the chosen date after filtering.")
+        return
+    curr = cur_row[0]["Amount"]
+    delta_pct = ((curr - mean)/abs(mean)*100.0) if mean else None
+    is_anom = (curr < lower) or (curr > upper)
+
+    # 7) print verdict
+    print(f"""🔎 Validation
+AAN: {aan}
+Predictive date: {predictive_date} | Used data date: {actual_date}
+Current: {curr:.2f}
+Baseline mean (last {LOOKBACK_N} m): {mean:.2f}
+Std dev: {std:.2f}
+Band (±{K_FACTOR}σ): [{lower:.2f}, {upper:.2f}]
+Δ% vs mean: {('%.2f' % delta_pct) if delta_pct is not None else 'NA'}%
+Anomaly? {'✅ YES' if is_anom else '❌ NO'}""")
+
+# ---------------- Use it like this ----------------
+# validate_aan(aan="<paste the AAN from your anomalies CSV>", predictive_date="2022-03-01")
