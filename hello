@@ -1,4 +1,19 @@
-subset.select("account_L5_Description").distinct().show(20, False)
-subset.select("account_L6_Description").distinct().show(20, False)
-subset.select("account_L7_Description").distinct().show(20, False)
-subset.select("product_L8_Description").distinct().show(20, False)
+from pyspark.sql import functions as F
+
+# --- target hierarchy and anomaly date ---
+target_date = "2022-03-01"
+
+df_check = (
+    subset
+    .filter((F.col("account_L5_Description") == "Operating Expenses") &
+            (F.col("account_L6_Description") == "Variable Expense") &
+            (F.col("account_L7_Description") == "Cost of Goods Sold") &
+            (F.col("product_L3_Description") == "Banking Solutions") &
+            (F.col("CC_L1_Description") == "All Cost Centers"))
+    .withColumn("date", F.to_date("date"))
+    .orderBy("date")
+)
+
+# --- show anomaly month + 3 months before it ---
+df_filtered = df_check.filter(F.col("date") <= F.lit(target_date)).orderBy(F.col("date").desc()).limit(4)
+display(df_filtered)
