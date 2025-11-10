@@ -2,115 +2,112 @@
 from pyspark.sql import functions as F, Window as W
 from functools import reduce
 from pyspark.sql import DataFrame
+import datetime
+import os
 
 
-DAYS_WINDOW = 90       
+BASE_PATH = "Files/SQL_DUMPS/FINAL_EXPORTS"
+
+
+runs = [f.path for f in dbutils.fs.ls(BASE_PATH) if "Run_" in f.name]
+if not runs:
+    raise Exception("No Run_* folders found in FINAL_EXPORTS.")
+latest_run = sorted(runs, reverse=True)[0]
+DATA_PATH  = f"{latest_run}/granular_subset"
+
+print(f" Using latest dataset from: {DATA_PATH}")
+
+
+DAYS_WINDOW = 90         # ~3-month rolling window
 K_FACTOR    = 3.0
-MIN_POINTS  = 3          
+MIN_POINTS  = 2           # monthly data → need at least 2 past months
 
-# Update these to match your schema (unchanged from before)
 PRODUCT_LEVELS    = ["product_L3_Description","product_L4_Description","product_L5_Description",
                      "product_L6_Description","product_L7_Description","product_L8_Description"]
 ACCOUNT_LEVELS    = ["account_L5_Description","account_L6_Description","account_L7_Description"]
 COSTCENTER_LEVELS = ["CC_L1_Description","CC_L2_Description","CC_L3_Description","CC_L4_Description"]
 
 
+df = (spark.read
+      .format("csv")
+      .option("header", True)
+      .option("inferSchema", True)
+      .option("recursiveFileLookup", "true")
+      .load(DATA_PATH))
+
+print(f" Loaded {df.count():,} rows from latest granular_subset")
 
 
 def _choose_l5_col(df):
-    # Pick the actual L5 column (handles account_L5_Description vs account_L5_description)
     for c in df.columns:
         if c.lower() == "account_l5_description":
             return c
-    # fallback to the canonical name
     return "account_L5_Description"
 
 ACCOUNT_L5_COL = _choose_l5_col(df)
-
-def norm_lower(colname):
-    return F.trim(F.lower(F.col(colname)))
-
+def norm_lower(colname): return F.trim(F.lower(F.col(colname)))
 
 def kpi_slice(df_in, label):
     x = norm_lower(ACCOUNT_L5_COL)
     if label == "OPEX":
-        return df_in.filter(x.rlike(r"^(operating expense(s)?|opex)$"))
+        return df_in.filter(x.rlike(r"(operating expense(s)?|opex)"))
     elif label == "EBITDA":
-        return df_in.filter(x.rlike(r"^ebitda$"))
-    else:  # Revenue
-        return df_in.filter(x.rlike(r"^revenue$"))
+        return df_in.filter(x.rlike(r"ebitda"))
+    else:
+        return df_in.filter(x.rlike(r"revenue"))
 
-
+# =========================
+# 5) Anomaly detector (same logic, 90-day window)
+# =========================
 def detect_anomalies_mavg_std_report(
     df_in,
     account_levels,
     product_levels,
     costcenter_levels,
-    date_col,            # "date"
-    metric_col,          # "Amount"
-    metric_name,         # "EBITDA" | "OPEX" | "Revenue"
+    date_col,
+    metric_col,
+    metric_name,
     days_window=90,
     k=3.0,
-    min_points=3,
+    min_points=2,
 ):
-    
-    def join_non_null(cols):
-        return F.concat_ws("-*-", *[F.col(c).cast("string") for c in cols])
-
-    def join_level_names(cols):
-        return F.concat_ws("-*-", *[F.lit(c.replace("_Description","")) for c in cols])
-
+    def join_non_null(cols): return F.concat_ws("-*-", *[F.col(c).cast("string") for c in cols])
+    def join_level_names(cols): return F.concat_ws("-*-", *[F.lit(c.replace("_Description","")) for c in cols])
     def deepest_present(cols):
-        expr = None
+        expr=None
         for c in reversed(cols):
             expr = F.when(F.col(c).isNotNull(), F.col(c).cast("string")).otherwise(expr)
         return expr
 
-    # value/name blocks
-    acct_vals = join_non_null(account_levels)
-    prod_vals = join_non_null(product_levels)
-    cc_vals   = join_non_null(costcenter_levels)
+    acct_vals, prod_vals, cc_vals = join_non_null(account_levels), join_non_null(product_levels), join_non_null(costcenter_levels)
+    acct_names, prod_names, cc_names = join_level_names(account_levels), join_level_names(product_levels), join_level_names(costcenter_levels)
 
-    acct_names = join_level_names(account_levels)
-    prod_names = join_level_names(product_levels)
-    cc_names   = join_level_names(costcenter_levels)
-
-    # aan_level / aan_value
     aan_level_expr = F.concat_ws(
         "-**-",
-        F.concat_ws("-*-", F.lit("Account"),    acct_names),
-        F.concat_ws("-*-", F.lit("ProductLine"),prod_names),
+        F.concat_ws("-*-", F.lit("Account"), acct_names),
+        F.concat_ws("-*-", F.lit("ProductLine"), prod_names),
         F.concat_ws("-*-", F.lit("CostCenter"), cc_names)
     )
     aan_value_expr = F.concat_ws("-**-", acct_vals, prod_vals, cc_vals)
 
-    # Partition by full depth; time-based RANGE window over 'date'
     group_cols = account_levels + product_levels + costcenter_levels
-    # For DateType orderBy, rangeBetween units are days. Use strictly past window: [-DAYS, -1].
     hist_w = (W.partitionBy(*group_cols)
                 .orderBy(F.col(date_col))
                 .rangeBetween(-days_window, -1))
 
     mean_hist = F.avg(F.col(metric_col)).over(hist_w)
     std_hist  = F.stddev_samp(F.col(metric_col)).over(hist_w)
-    floor = F.lit(1e-9)
-    band_half = F.greatest(F.coalesce(std_hist, F.lit(0.0)), floor) * F.lit(k)
-    lower = mean_hist - band_half
-    upper = mean_hist + band_half
+    band_half = F.greatest(F.coalesce(std_hist, F.lit(0.0)), F.lit(1e-9)) * F.lit(k)
+    lower, upper = mean_hist - band_half, mean_hist + band_half
     cnt_hist = F.count(F.col(metric_col)).over(hist_w)
 
     delta_num = F.when(
         mean_hist.isNotNull() & (mean_hist != 0),
-        (F.col(metric_col) - mean_hist) / F.abs(mean_hist) * F.lit(100.0)
-    ).otherwise(F.lit(None).cast("double"))
+        (F.col(metric_col) - mean_hist) / F.abs(mean_hist) * 100.0
+    )
 
     aan_key = F.concat_ws("::", F.lit(metric_name), aan_value_expr)
-
-    # deepest for inference
-    acct_deep = deepest_present(account_levels)
-    prod_deep = deepest_present(product_levels)
-    cc_deep   = deepest_present(costcenter_levels)
-
+    acct_deep, prod_deep, cc_deep = deepest_present(account_levels), deepest_present(product_levels), deepest_present(costcenter_levels)
     acct_part = F.when(acct_deep.isNotNull(), F.concat(F.lit("Account="), acct_deep))
     prod_part = F.when(prod_deep.isNotNull(), F.concat(F.lit("ProductLine="), prod_deep))
     cc_part   = F.when(cc_deep.isNotNull(),   F.concat(F.lit("CostCenter="), cc_deep))
@@ -125,16 +122,14 @@ def detect_anomalies_mavg_std_report(
         .withColumn("_delta_num", F.round(delta_num, 3))
         .withColumn("aan_level", aan_level_expr)
         .withColumn("aan_value", aan_value_expr)
-        .withColumn("aan_name",  F.lit(metric_name))
-        .withColumn("aan",       aan_key)
-        .withColumn(
-            "is_anomaly",
-            ((F.col(metric_col) < lower) | (F.col(metric_col) > upper)) & (cnt_hist >= F.lit(min_points))
-        )
+        .withColumn("aan_name", F.lit(metric_name))
+        .withColumn("aan", aan_key)
+        .withColumn("is_anomaly",
+            ((F.col(metric_col) < lower) | (F.col(metric_col) > upper)) &
+            (cnt_hist >= F.lit(min_points)))
     )
 
-    # rank by |delta| within (date, metric)
-    rank_w = W.partitionBy("predictive_date", "aan_name").orderBy(F.desc(F.abs(F.col("_delta_num"))))
+    rank_w = W.partitionBy("predictive_date","aan_name").orderBy(F.desc(F.abs(F.col("_delta_num"))))
     out = out.withColumn("_rank", F.dense_rank().over(rank_w))
 
     inference_expr = F.concat_ws(
@@ -149,32 +144,25 @@ def detect_anomalies_mavg_std_report(
         F.lit("to"), F.format_string("%.2f", F.col("_upper")), F.lit(")")
     )
 
-    result = (out.filter(F.col("is_anomaly"))
+    return (out.filter(F.col("is_anomaly"))
         .select(
-            "aan",
-            "aan_date",
-            "predictive_date",
-            F.col(date_col).alias("date"),   # keep your explicit 'date' column too
-            "aan_level",
-            F.format_string("%.3f", F.col("_delta_num")).alias("aan_delta"),
+            "aan","aan_date","predictive_date",F.col(date_col).alias("date"),
+            "aan_level",F.format_string("%.3f",F.col("_delta_num")).alias("aan_delta"),
             F.col("_expected").alias("aan_attr"),
             F.col("_rank").cast("string").alias("aan_ranking"),
             inference_expr.alias("inference"),
-            "aan_name",
-            "aan_value",
+            "aan_name","aan_value",
             F.concat_ws("|",
-                F.date_format(F.col("predictive_date"), "yyyy-MM-dd"),
-                F.col("aan_name"),
-                F.col("aan")
-            ).alias("anomaly_id"),
+                F.date_format(F.col("predictive_date"),"yyyy-MM-dd"),
+                F.col("aan_name"),F.col("aan")).alias("anomaly_id"),
             F.lit("Point Anomaly").alias("anomaly_type"),
             F.lit(False).alias("rca_present"),
             F.lit(False).alias("impact_present")
-        )
-    )
-    return result
+        ))
 
-
+# =========================
+# 6) Run for each KPI
+# =========================
 def run_kpi(label):
     kpi_df = kpi_slice(df, label)
     return detect_anomalies_mavg_std_report(
@@ -182,10 +170,10 @@ def run_kpi(label):
         account_levels=ACCOUNT_LEVELS,
         product_levels=PRODUCT_LEVELS,
         costcenter_levels=COSTCENTER_LEVELS,
-        date_col="date",          # <-- use your 'date' column
+        date_col="date",
         metric_col="Amount",
         metric_name=label,
-        days_window=DAYS_WINDOW,  # <-- 3 months (90 days)
+        days_window=DAYS_WINDOW,
         k=K_FACTOR,
         min_points=MIN_POINTS,
     )
@@ -194,12 +182,12 @@ ebitda_anoms  = run_kpi("EBITDA")
 opex_anoms    = run_kpi("OPEX")
 revenue_anoms = run_kpi("Revenue")
 
-anomalies_df = reduce(DataFrame.unionByName, [ebitda_anoms, opex_anoms, revenue_anoms])
+anomalies_df = reduce(DataFrame.unionByName,[ebitda_anoms,opex_anoms,revenue_anoms])
 
-# Peek (NO SAVE)
 print("Counts →",
       "EBITDA:", ebitda_anoms.count(),
-      "OPEX:",   opex_anoms.count(),
-      "Revenue:",revenue_anoms.count(),
-      "All:",    anomalies_df.count())
+      "OPEX:", opex_anoms.count(),
+      "Revenue:", revenue_anoms.count(),
+      "All:", anomalies_df.count())
+
 display(anomalies_df.orderBy(F.col("predictive_date").desc()).limit(100))
