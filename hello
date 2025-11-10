@@ -1,41 +1,19 @@
 from pyspark.sql import functions as F
 
-# Ensure date is DateType
+# ensure date is properly typed
 subset = subset.withColumn("date", F.to_date("date"))
 
-# Helper: equals (case-insensitive, trimmed)
-def eqi(col, val):
-    return F.lower(F.trim(F.col(col))) == F.lit(val.strip().lower())
-
-# 1) Filter: March 2022 + full hierarchy
-filt = subset.filter(
-    (F.year("date") == 2022) & (F.month("date") == 3) &
-    eqi("account_L5_Description", "Operating Expenses") &
-    eqi("account_L6_Description", "Variable Expense") &
-    eqi("account_L7_Description", "Cost of Goods Sold") &
-    eqi("product_L3_Description", "Banking Solutions") &
-    eqi("CC_L1_Description", "All Cost Centers")
+# ---- filter for March 2022 ----
+subset_march22 = subset.filter(
+    (F.year("date") == 2022) & (F.month("date") == 3)
 )
 
-# Show results
-print("Total matching rows in March 2022:", filt.count())
-filt.select("date","Amount").orderBy("date").show(50, False)
+# ---- convert to pandas ----
+pdf_march22 = subset_march22.toPandas()
 
-# 2) If you want the row closest to 2022-03-01 (in case your data is month-end):
-target = F.to_date(F.lit("2022-03-01"))
-nearest = (subset
-    .filter(
-        eqi("account_L5_Description", "Operating Expenses") &
-        eqi("account_L6_Description", "Variable Expense") &
-        eqi("account_L7_Description", "Cost of Goods Sold") &
-        eqi("product_L3_Description", "Banking Solutions") &
-        eqi("CC_L1_Description", "All Cost Centers")
-    )
-    .withColumn("diff_days", F.abs(F.datediff("date", target)))
-    .orderBy("diff_days", "date")
-    .select("date","Amount")
-    .limit(1)
-)
+# optional: sort for readability
+pdf_march22 = pdf_march22.sort_values(by=["date"], ascending=True)
 
-print("Nearest to 2022-03-01:")
-nearest.show(1, False)
+# ---- preview ----
+print("✅ March 2022 subset preview — total rows:", len(pdf_march22))
+display(pdf_march22.head(20))   # in notebook this will show a table
