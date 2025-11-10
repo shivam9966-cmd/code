@@ -1,51 +1,46 @@
-from pyspark.sql import Window
+from pyspark.sql import functions as F, Window
 
+# --- Config ---
 ACCOUNT_COL = "ACCOUNT"
-TARGET = 5000
+TARGET = 5000   # feel free to change (total can end up < or > this)
 
-acct_counts = (
-    granular.groupBy(ACCOUNT_COL).count()
-             .orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
-)
+# 1) Counts per account, ascending
+acct_counts = (granular
+               .groupBy(ACCOUNT_COL)
+               .count()
+               .orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc()))
 
+# 2) Cumulative sum over ascending accounts
 w = Window.orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
-acct_counts = (
-    acct_counts
-    .withColumn("row_number", F.row_number().over(w))
-    .withColumn("cumulative_sum", F.sum("count").over(w))
-)
+acct_counts = (acct_counts
+               .withColumn("row_number", F.row_number().over(w))
+               .withColumn("cumulative_sum", F.sum("count").over(w)))
 
-exceed = (acct_counts.filter(F.col("cumulative_sum") > TARGET)
-                    .orderBy("cumulative_sum")
-                    .select("row_number")
-                    .limit(1)
-                    .collect())
+# 3) Include all accounts up to TARGET, plus the first account that pushes past it (if any)
+exceed = (acct_counts
+          .filter(F.col("cumulative_sum") > TARGET)
+          .orderBy("cumulative_sum")
+          .select("row_number")
+          .limit(1)
+          .collect())
 
 if exceed:
-    rnum = exceed[0][0]
-    chosen_accts = acct_counts.where(
-        (F.col("cumulative_sum") <= TARGET) | (F.col("row_number") == rnum)
-    ).select(ACCOUNT_COL).distinct()
+    last_rownum = exceed[0][0]
+    included_accounts = (acct_counts
+                         .where((F.col("cumulative_sum") <= TARGET) | (F.col("row_number") == last_rownum))
+                         .select(ACCOUNT_COL).distinct())
 else:
-    chosen_accts = acct_counts.select(ACCOUNT_COL).distinct()
+    # never exceeded -> include all accounts
+    included_accounts = acct_counts.select(ACCOUNT_COL).distinct()
 
-subset = granular.join(chosen_accts, on=ACCOUNT_COL, how="inner")
+# 4) Build the subset: this ensures ALL rows for any included account are present
+subset = granular.join(included_accounts, on=ACCOUNT_COL, how="inner")
 
-# ---------- Columns to keep (now includes DATE) ----------
-REQUESTED_COLS = [
-    "product_L3_Description","product_L4_Description","product_L5_Description",
-    "product_L6_Description","product_L7_Description","product_L8_Description",
-    "account_L5_Description","account_L6_Description","account_L7_Description",
-    "CC_L1_Description","CC_L2_Description","CC_L3_Description","CC_L4_Description",
-    "ACCOUNT","COSTCENTER","PRODUCTLINE","SCENARIO","VERSION",
-    "DATE","Amount","YEAR","QUARTER","Actual","Forecasted"
-]
+# 5) Quick sanity: show coverage and a small preview
+print(f"✅ Total rows in subset (full accounts only): {subset.count():,}")
+(acct_counts.join(included_accounts, on=ACCOUNT_COL, how="inner")
+            .orderBy(F.col("count").asc(), F.col(ACCOUNT_COL).asc())
+            .select(ACCOUNT_COL, "count", "cumulative_sum")
+            .show(30, truncate=False))
 
-available = {c.lower(): c for c in subset.columns}
-keep_cols = [available[c.lower()] for c in REQUESTED_COLS if c.lower() in available]
-
-subset = subset.select(*keep_cols)
-
-# ---------- Preview ----------
-print(f"✅ Rows included (incl. full last account): {subset.count():,}")
-display(subset.limit(20))
+subset.show(20, truncate=False)  # or display(subset.limit(20)) in notebooks
