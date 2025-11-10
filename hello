@@ -1,53 +1,55 @@
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
+# === Inputs ===
 metric = "Operating Expenses"
 product_l8 = "Loyalty"
 target_date = "2022-03-01"
-K_FACTOR = 2.5  # same threshold as anomaly function
+K_FACTOR = 2.5
 
-# === FILTER this specific AAN hierarchy ===
+# === Filter this specific anomaly hierarchy ===
 df_filt = (
     subset
     .filter((F.col("account_L5_Description") == metric) &
             (F.col("account_L6_Description") == "Variable Expense") &
             (F.col("account_L7_Description") == "Cost of Goods Sold") &
             (F.col("product_L8_Description") == product_l8))
+    .withColumn("date", F.to_date("date"))  # ensure date type
 )
 
-# === Separate baseline (3 months before) and current month ===
-df_hist = df_filt.filter(F.col("date") < F.lit(target_date)).orderBy(F.col("date").desc()).limit(3)
-df_curr = df_filt.filter(F.col("date") == F.lit(target_date))
+# === Find nearest available date to target ===
+target_dt = F.to_date(F.lit(target_date))
+df_with_diff = df_filt.withColumn("diff_days", F.abs(F.datediff(F.col("date"), target_dt)))
+closest_row = df_with_diff.orderBy("diff_days").limit(1).collect()
 
-# === Compute baseline stats ===
-baseline = df_hist.agg(
-    F.avg("Amount").alias("mean"),
-    F.stddev("Amount").alias("std")
-).collect()[0]
-
-mean = baseline["mean"] or 0
-std  = baseline["std"] or 0
-lower, upper = mean - K_FACTOR * std, mean + K_FACTOR * std
-
-# === Get current month amount ===
-curr_val_row = df_curr.select("Amount").collect()
-curr_val = curr_val_row[0]["Amount"] if curr_val_row else None
-
-# === Determine if anomaly ===
-if curr_val is not None:
-    delta_pct = ((curr_val - mean) / abs(mean)) * 100 if mean else 0
-    is_anom = curr_val < lower or curr_val > upper
-    print(f"""
-    ✅ Manual Verification:
-    Metric: {metric}
-    Product L8: {product_l8}
-    Target Date: {target_date}
-
-    Current: {curr_val:.2f}
-    Mean (last 3m): {mean:.2f}
-    Std Dev: {std:.2f}
-    Band: [{lower:.2f}, {upper:.2f}]
-    Δ%: {delta_pct:.2f}%
-    Anomaly? {'✅ YES' if is_anom else '❌ NO'}
-    """)
+if not closest_row:
+    print("⚠️ No records at all for this hierarchy.")
 else:
-    print("⚠️ No record found for the given date.")
+    actual_date = closest_row[0]["date"]
+    print(f"🔎 Using nearest available date: {actual_date}")
+
+    # === Split into baseline (3 months before) and current month ===
+    df_hist = df_filt.filter(F.col("date") < F.lit(actual_date)).orderBy(F.col("date").desc()).limit(3)
+    df_curr = df_filt.filter(F.col("date") == F.lit(actual_date))
+
+    # === Compute baseline ===
+    baseline = df_hist.agg(
+        F.avg("Amount").alias("mean"),
+        F.stddev("Amount").alias("std")
+    ).collect()[0]
+
+    mean = baseline["mean"] or 0
+    std  = baseline["std"] or 0
+    lower, upper = mean - K_FACTOR * std, mean + K_FACTOR * std
+
+    curr_row = df_curr.select("Amount").collect()
+    curr_val = curr_row[0]["Amount"] if curr_row else None
+
+    if curr_val is not None:
+        delta_pct = ((curr_val - mean) / abs(mean)) * 100 if mean else 0
+        is_anom = curr_val < lower or curr_val > upper
+        print(f"""
+        ✅ Manual Verification:
+        Metric: {metric}
+        Product L8: {product_l8}
+        Target Date: {ta
