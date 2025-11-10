@@ -1,7 +1,47 @@
-year_summary = (anomalies_df
-                .withColumn("year", F.year("predictive_date"))
-                .groupBy("year", "aan_name")
-                .agg(F.count("*").alias("num_anomalies"))
-                .orderBy("year", "aan_name"))
 
-display(year_summary)
+
+aan_key = "OPEX::Account-**-ProductLine-**-CostCenter-*-CC_L1-*-CC_L2-*-CC_L3-*-CC_L4-*"
+target_date = "2022-03-01"
+K_FACTOR = 2.5
+
+# ---- parse AAN ----
+metric = aan_key.split("::")[0]
+path = aan_key.split("::")[1]
+parts = path.split("-**-")
+acct, prod, cost = parts[0], parts[1], parts[2]
+
+# ---- filter matching hierarchy ----
+df_filt = df.filter(
+    F.col("account_L5_Description").like(f"%{acct.split('-*-')[0]}%")
+)
+
+# ---- take all rows before target date ----
+df_hist = df_filt.filter(F.col("date") < F.lit(target_date))
+df_curr = df_filt.filter(F.col("date") == F.lit(target_date))
+
+# ---- compute baseline ----
+baseline = df_hist.agg(
+    F.avg("Amount").alias("mean"),
+    F.stddev("Amount").alias("std")
+).collect()[0]
+
+mean, std = baseline["mean"], baseline["std"]
+lower, upper = mean - K_FACTOR * std, mean + K_FACTOR * std
+
+# ---- current value ----
+curr = df_curr.select("Amount").collect()[0]["Amount"]
+
+# ---- verdict ----
+is_anom = curr < lower or curr > upper
+delta_pct = ((curr - mean) / abs(mean)) * 100 if mean != 0 else None
+
+print(f"""
+AAN: {aan_key}
+Date: {target_date}
+Current: {curr:.2f}
+Baseline mean: {mean:.2f}
+Std dev: {std:.2f}
+Band: [{lower:.2f}, {upper:.2f}]
+Δ%: {delta_pct:.2f}%
+Anomaly? {is_anom}
+""")
