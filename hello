@@ -1,51 +1,52 @@
 from pyspark.sql import functions as F
 
-aan_key = "OPEX::Account-**-ProductLine-**-CostCenter-*-CC_L1-*-CC_L2-*-CC_L3-*-CC_L4-*"
-target_date = "2022-03-01"
+# === Your anomaly inputs ===
+aan = "OPEX::Account-**-ProductLine-**-CostCenter-*-CC_L1-*-CC_L2-*-CC_L3-*-CC_L4-*"
+predictive_date = "2022-03-01"
 K_FACTOR = 2.5
 
-# ---- parse AAN ----
-metric = aan_key.split("::")[0]
-path = aan_key.split("::")[1]
-acct = path.split("-**-")[0].split("-*-")[0]
+# === Extract hierarchy info from AAN ===
+metric = aan.split("::")[0]
+acct = "Operating Expenses"  # use your account_L5_Description for OPEX
+# Adjust if AAN includes more granular filters (like ProductLine, CostCenter, etc.)
 
-# ---- filter ----
-df_filt = df.filter(F.col("account_L5_Description").like(f"%{acct}%"))
+# === Filter dataset to match that hierarchy ===
+df_filt = subset.filter(F.col("account_L5_Description") == acct)
 
-# ---- separate current and historical ----
-df_hist = df_filt.filter(F.col("date") < F.lit(target_date))
-df_curr = df_filt.filter(F.col("date") == F.lit(target_date))
+# === Get baseline (previous 3 months) ===
+df_hist = df_filt.filter(F.col("date") < F.lit(predictive_date))
+baseline = df_hist.agg(
+    F.avg("Amount").alias("mean"),
+    F.stddev("Amount").alias("std")
+).collect()[0]
 
-# ---- sanity checks ----
-if df_hist.count() == 0:
-    print("⚠️ No historical data found before target date.")
-if df_curr.count() == 0:
-    print("⚠️ No record found on the target date.")
-if df_hist.count() == 0 or df_curr.count() == 0:
-    display(df_filt.orderBy('date'))
-else:
-    # ---- compute baseline ----
-    baseline = df_hist.agg(
-        F.avg("Amount").alias("mean"),
-        F.stddev("Amount").alias("std")
-    ).collect()[0]
+mean = baseline["mean"] or 0
+std  = baseline["std"] or 0
 
-    mean = baseline["mean"] or 0
-    std  = baseline["std"] or 0
+# === Get the anomaly month’s amount ===
+curr_val = (
+    df_filt.filter(F.col("date") == F.lit(predictive_date))
+    .select("Amount")
+    .collect()
+)
+curr_val = curr_val[0]["Amount"] if curr_val else None
 
-    lower, upper = mean - K_FACTOR * std, mean + K_FACTOR * std
-    curr = df_curr.select("Amount").collect()[0]["Amount"]
+# === Calculate dynamic band & check ===
+lower = mean - K_FACTOR * std
+upper = mean + K_FACTOR * std
+is_anom = curr_val < lower or curr_val > upper if curr_val is not None else None
+delta_pct = ((curr_val - mean) / abs(mean)) * 100 if mean else 0
 
-    is_anom = curr < lower or curr > upper
-    delta_pct = ((curr - mean) / abs(mean)) * 100 if mean != 0 else 0
-
-    print(f"""
-    AAN: {aan_key}
-    Date: {target_date}
-    Current: {curr:.2f}
-    Baseline mean: {mean:.2f}
-    Std dev: {std:.2f}
-    Band: [{lower:.2f}, {upper:.2f}]
-    Δ%: {delta_pct:.2f}%
-    Anomaly? {is_anom}
-    """)
+print(f"""
+Manual Anomaly Validation:
+--------------------------
+AAN: {aan}
+Metric: {metric}
+Predictive Date: {predictive_date}
+Current Value: {curr_val}
+Baseline Mean: {mean:.2f}
+Std Dev: {std:.2f}
+Band: [{lower:.2f}, {upper:.2f}]
+Δ%: {delta_pct:.2f}%
+Anomaly? {'✅ YES' if is_anom else '❌ NO'}
+""")
