@@ -1,36 +1,53 @@
 from pyspark.sql import functions as F
 
-# === 1️⃣ Load the subset dataset ===
-run_folder = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_21-35-42"  # 👈 update timestamp if needed
-subset_path = f"{run_folder}/granular_subset"
+# --- 1) Load subset
+subset_path = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset"
+subset = (spark.read.format("csv").option("header", True).option("inferSchema", True)
+          .option("recursiveFileLookup","true").load(subset_path)
+          .withColumn("date", F.to_date("date")))
 
-print(f"📂 Loading subset data from: {subset_path}")
-subset = spark.read.option("header", True).csv(subset_path)
-print(f"✅ Subset loaded successfully with {subset.count()} rows")
+# --- 2) Target hierarchy (case-insensitive trim match)
+def eqi(col, txt):  # equals, case-insensitive, trimmed
+    return F.lower(F.trim(F.col(col))) == F.lit(txt.lower().strip())
 
-# === 2️⃣ Filter for this hierarchy ===
-target_date = "2022-03-01"
-
-df_check = (
-    subset
-    .filter((F.col("account_L5_Description") == "Operating Expenses") &
-            (F.col("account_L6_Description") == "Variable Expense") &
-            (F.col("account_L7_Description") == "Cost of Goods Sold") &
-            (F.col("product_L3_Description") == "Banking Solutions") &
-            (F.col("CC_L1_Description") == "All Cost Centers"))
-    .withColumn("date", F.to_date("date"))
-    .orderBy("date")
+df_filt = subset.filter(
+    eqi("account_L5_Description", "Operating Expenses") &
+    eqi("account_L6_Description", "Variable Expense") &
+    eqi("account_L7_Description", "Cost of Goods Sold") &
+    eqi("product_L3_Description", "Banking Solutions") &
+    eqi("CC_L1_Description", "All Cost Centers")
 )
 
-# === 3️⃣ Show anomaly month + 3 months before ===
-df_filtered = (
-    df_check
-    .filter(F.col("date") <= F.lit(target_date))
-    .orderBy(F.col("date").desc())
-    .limit(4)
-)
+if df_filt.rdd.isEmpty():
+    print("⚠️ No rows match this hierarchy in the 5K subset.")
+else:
+    # --- 3) Use nearest available date to 2022-03-01
+    target_date = F.to_date(F.lit("2022-03-01"))
+    cand = (df_filt.select("date")
+                  .withColumn("diff", F.abs(F.datediff("date", target_date)))
+                  .orderBy("diff").limit(1).collect())
+    actual_date = cand[0]["date"]
+    print(f"Using date: {actual_date}")
 
-print("✅ Filtered data for the hierarchy:")
-display(df_filtered.select("date", "Amount", "account_L5_Description",
-                            "account_L6_Description", "account_L7_Description",
-                            "product_L3_Description", "CC_L1_Description"))
+    # --- 4) Baseline = previous 3 months
+    hist = (df_filt.filter(F.col("date") < F.lit(actual_date))
+                  .orderBy(F.col("date").desc()).limit(3))
+    stats = hist.agg(F.avg("Amount").alias("mean"), F.stddev("Amount").alias("std")).collect()[0]
+    mean = (stats["mean"] or 0.0); std = (stats["std"] or 0.0); K = 2.5
+    lower, upper = mean - K*std, mean + K*std
+
+    # current
+    cur_row = df_filt.filter(F.col("date") == F.lit(actual_date)).select("Amount").collect()
+    if not cur_row:
+        print("⚠️ No current row on the chosen date.")
+    else:
+        curr = cur_row[0]["Amount"]
+        delta_pct = ((curr - mean)/abs(mean)*100) if mean else None
+        is_anom = (curr < lower) or (curr > upper)
+        print(f"""✅ Manual check
+Hierarchy: OPEX • Var Exp • COGS • Banking Solutions • All Cost Centers
+Current ({actual_date}): {curr:.2f}
+Mean(3m): {mean:.2f}   Std: {std:.2f}
+Band (±2.5σ): [{lower:.2f}, {upper:.2f}]
+Δ%: {('%.2f' % delta_pct) if delta_pct is not None else 'NA'}%
+Anomaly? {'YES' if is_anom else 'NO'}""")
