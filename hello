@@ -1,53 +1,12 @@
 from pyspark.sql import functions as F
 
-# --- 1) Load subset
-subset_path = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset"
-subset = (spark.read.format("csv").option("header", True).option("inferSchema", True)
-          .option("recursiveFileLookup","true").load(subset_path)
-          .withColumn("date", F.to_date("date")))
+# assuming your DataFrame is named subset
+subset = subset.withColumn("date", F.to_date("date"))  # ensure proper date type
 
-# --- 2) Target hierarchy (case-insensitive trim match)
-def eqi(col, txt):  # equals, case-insensitive, trimmed
-    return F.lower(F.trim(F.col(col))) == F.lit(txt.lower().strip())
-
-df_filt = subset.filter(
-    eqi("account_L5_Description", "Operating Expenses") &
-    eqi("account_L6_Description", "Variable Expense") &
-    eqi("account_L7_Description", "Cost of Goods Sold") &
-    eqi("product_L3_Description", "Banking Solutions") &
-    eqi("CC_L1_Description", "All Cost Centers")
+# capture all March 2022 records (use ±1 day buffer for safety)
+subset_march22 = subset.filter(
+    (F.month("date") == 3) & (F.year("date") == 2022)
 )
 
-if df_filt.rdd.isEmpty():
-    print("⚠️ No rows match this hierarchy in the 5K subset.")
-else:
-    # --- 3) Use nearest available date to 2022-03-01
-    target_date = F.to_date(F.lit("2022-03-01"))
-    cand = (df_filt.select("date")
-                  .withColumn("diff", F.abs(F.datediff("date", target_date)))
-                  .orderBy("diff").limit(1).collect())
-    actual_date = cand[0]["date"]
-    print(f"Using date: {actual_date}")
-
-    # --- 4) Baseline = previous 3 months
-    hist = (df_filt.filter(F.col("date") < F.lit(actual_date))
-                  .orderBy(F.col("date").desc()).limit(3))
-    stats = hist.agg(F.avg("Amount").alias("mean"), F.stddev("Amount").alias("std")).collect()[0]
-    mean = (stats["mean"] or 0.0); std = (stats["std"] or 0.0); K = 2.5
-    lower, upper = mean - K*std, mean + K*std
-
-    # current
-    cur_row = df_filt.filter(F.col("date") == F.lit(actual_date)).select("Amount").collect()
-    if not cur_row:
-        print("⚠️ No current row on the chosen date.")
-    else:
-        curr = cur_row[0]["Amount"]
-        delta_pct = ((curr - mean)/abs(mean)*100) if mean else None
-        is_anom = (curr < lower) or (curr > upper)
-        print(f"""✅ Manual check
-Hierarchy: OPEX • Var Exp • COGS • Banking Solutions • All Cost Centers
-Current ({actual_date}): {curr:.2f}
-Mean(3m): {mean:.2f}   Std: {std:.2f}
-Band (±2.5σ): [{lower:.2f}, {upper:.2f}]
-Δ%: {('%.2f' % delta_pct) if delta_pct is not None else 'NA'}%
-Anomaly? {'YES' if is_anom else 'NO'}""")
+subset_march22.show(20, False)      # preview top 20
+print("Total rows for March 2022:", subset_march22.count())
