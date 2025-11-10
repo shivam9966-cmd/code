@@ -52,4 +52,15 @@ else:
         ✅ Manual Verification:
         Metric: {metric}
         Product L8: {product_l8}
-        Target Date: {ta
+        Target Date: {target_date}
+        Actual Data Date: {actual_date}
+
+        Current Value: {curr_val:.2f}
+        Mean (last 3m): {mean:.2f}
+        Std Dev: {std:.2f}
+        Band: [{lower:.2f}, {upper:.2f}]
+        Δ%: {delta_pct:.2f}%
+        Anomaly? {'✅ YES' if is_anom else '❌ NO'}
+        """)
+    else:
+        print("⚠️ No record found even for the detected nearest date.")
