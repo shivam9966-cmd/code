@@ -1,5 +1,5 @@
-# Load the granularbug dataset (adjust the path if it’s stored differently)
-granularbug = spark.read.csv("Files/SQL_DUMPS/granularbug", header=True, inferSchema=True)
+# Convert Spark DataFrame (granular) to pandas and preview
+granular_pd = granular.limit(20).toPandas()
 
-# Show 20 rows in tabular form
-display(granularbug.limit(20))
+# Display first 20 rows as pandas-style table
+display(granular_pd)
