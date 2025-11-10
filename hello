@@ -1,40 +1,43 @@
-# ================================================================
-# Auto-load latest Run_* / granular_subset and run 3-month anomalies
-# ================================================================
+
+# Monthly anomalies (3 prior months) for Revenue / OPEX / EBITDA
+# - Auto-pick latest Files/SQL_DUMPS/FINAL_EXPORTS/Run_*/granular_subset
+# - Uses 'date' column (DateType); window = rowsBetween(-3, -1)
+# - Dynamic threshold: mean ± K * std
+# - MIN_POINTS = 2 (monthly)
+# - Outputs anomalies_df (no save)
+
+
 from pyspark.sql import functions as F, Window as W
 from pyspark.sql import DataFrame
 from functools import reduce
 
-# ---------- 1) Locate latest Run_* / granular_subset (no dbutils) ----------
+
 BASE_PATH = "Files/SQL_DUMPS/FINAL_EXPORTS"
 
-# Look at any files inside Run_*/granular_subset/* and extract the run folder
 paths_df = (spark.read.format("binaryFile")
             .load(f"{BASE_PATH}/Run_*/granular_subset/*")
             .select("path"))
-
 if paths_df.rdd.isEmpty():
     raise Exception("No files found under FINAL_EXPORTS/Run_*/granular_subset/*")
 
 runs_df = paths_df.select(
     F.regexp_extract("path", r"(.*?/Run_[^/]+)/granular_subset/.*", 1).alias("run")
 ).distinct()
-
 latest_run = runs_df.orderBy(F.col("run").desc()).limit(1).collect()[0]["run"]
 DATA_PATH  = f"{latest_run}/granular_subset"
-print(f"📂 Using latest dataset path: {DATA_PATH}")
+print(f"📂 Using latest dataset: {DATA_PATH}")
 
-# ---------- 2) Config (monthly data → MIN_POINTS=2) ----------
-DAYS_WINDOW = 90     # ~3 months
+
 K_FACTOR    = 3.0
-MIN_POINTS  = 2      # monthly data → at least 2 prior months required
+MIN_POINTS  = 2            # monthly → need ≥2 past months
+LOOKBACK_N  = 3            # use 3 PRIOR months in the window
 
 PRODUCT_LEVELS    = ["product_L3_Description","product_L4_Description","product_L5_Description",
                      "product_L6_Description","product_L7_Description","product_L8_Description"]
 ACCOUNT_LEVELS    = ["account_L5_Description","account_L6_Description","account_L7_Description"]
 COSTCENTER_LEVELS = ["CC_L1_Description","CC_L2_Description","CC_L3_Description","CC_L4_Description"]
 
-# ---------- 3) Load CSV subset (expects a DateType 'date' column & 'Amount') ----------
+
 df = (spark.read
       .format("csv")
       .option("header", True)
@@ -42,10 +45,10 @@ df = (spark.read
       .option("recursiveFileLookup", "true")
       .load(DATA_PATH))
 
-# Ensure 'date' is DateType
+
 df = df.withColumn("date", F.to_date(F.col("date")))
 
-# ---------- 4) KPI slicer (robust vs label variations; detects L5 column name) ----------
+# ---------- 4) KPI slicer (robust to label variations + column casing) ----------
 def _choose_l5_col(dframe):
     for c in dframe.columns:
         if c.lower() == "account_l5_description":
@@ -58,39 +61,41 @@ def norm_lower(colname): return F.trim(F.lower(F.col(colname)))
 def kpi_slice(df_in, label):
     x = norm_lower(ACCOUNT_L5_COL)
     if label == "OPEX":
-        # matches "operating expense" / "operating expenses" / "opex" (case/space-insensitive)
+        # matches "operating expense", "operating expenses", "opex"
         return df_in.filter(x.rlike(r"(?:^|\s)(operating expense(s)?|opex)(?:\s|$)"))
     elif label == "EBITDA":
         return df_in.filter(x.rlike(r"(?:^|\s)ebitda(?:\s|$)"))
     else:  # Revenue
         return df_in.filter(x.rlike(r"(?:^|\s)revenue(?:\s|$)"))
 
-# ---------- 5) Detector (DATE + 90-day lookback; dynamic mean±k·std) ----------
+
 def detect_anomalies_mavg_std_report(
-    df_in,
+    df_in: DataFrame,
     account_levels,
     product_levels,
     costcenter_levels,
-    date_col,            # "date"
-    metric_col,          # "Amount"
-    metric_name,         # "EBITDA" | "OPEX" | "Revenue"
-    days_window=90,
-    k=3.0,
-    min_points=2,
-):
-    # helpers
-    def join_non_null(cols):  return F.concat_ws("-*-", *[F.col(c).cast("string") for c in cols])
-    def join_level_names(cols): return F.concat_ws("-*-", *[F.lit(c.replace("_Description","")) for c in cols])
+    date_col: str,        # "date"
+    metric_col: str,      # "Amount"
+    metric_name: str,     # "EBITDA" | "OPEX" | "Revenue"
+    lookback_n: int = 3,  # prior months to use
+    k: float = 3.0,
+    min_points: int = 2,
+) -> DataFrame:
+
+    
+    def join_non_null(cols):   return F.concat_ws("-*-", *[F.col(c).cast("string") for c in cols])
+    def join_level_names(cols):return F.concat_ws("-*-", *[F.lit(c.replace("_Description","")) for c in cols])
     def deepest_present(cols):
-        expr = None
+        expr=None
         for c in reversed(cols):
             expr = F.when(F.col(c).isNotNull(), F.col(c).cast("string")).otherwise(expr)
         return expr
 
-    acct_vals, prod_vals, cc_vals   = map(join_non_null, [account_levels, product_levels, costcenter_levels])
-    acct_names, prod_names, cc_names= map(join_level_names, [account_levels, product_levels, costcenter_levels])
+   
+    acct_vals, prod_vals, cc_vals    = map(join_non_null, [account_levels, product_levels, costcenter_levels])
+    acct_names, prod_names, cc_names = map(join_level_names, [account_levels, product_levels, costcenter_levels])
 
-    # aan_level / aan_value
+    
     aan_level_expr = F.concat_ws(
         "-**-",
         F.concat_ws("-*-", F.lit("Account"),     acct_names),
@@ -98,13 +103,14 @@ def detect_anomalies_mavg_std_report(
         F.concat_ws("-*-", F.lit("CostCenter"),  cc_names)
     )
     aan_value_expr = F.concat_ws("-**-", acct_vals, prod_vals, cc_vals)
+    aan_key        = F.concat_ws("::", F.lit(metric_name), aan_value_expr)
 
     group_cols = account_levels + product_levels + costcenter_levels
 
-    # Time-based window over DateType: days units; strictly past [-DAYS, -1]
+    
     hist_w = (W.partitionBy(*group_cols)
                 .orderBy(F.col(date_col))
-                .rangeBetween(-days_window, -1))
+                .rowsBetween(-lookback_n, -1))
 
     mean_hist = F.avg(F.col(metric_col)).over(hist_w)
     std_hist  = F.stddev_samp(F.col(metric_col)).over(hist_w)
@@ -116,8 +122,6 @@ def detect_anomalies_mavg_std_report(
         mean_hist.isNotNull() & (mean_hist != 0),
         (F.col(metric_col) - mean_hist) / F.abs(mean_hist) * 100.0
     )
-
-    aan_key = F.concat_ws("::", F.lit(metric_name), aan_value_expr)
 
     # inference parts
     acct_deep, prod_deep, cc_deep = map(deepest_present, [account_levels, product_levels, costcenter_levels])
@@ -137,14 +141,12 @@ def detect_anomalies_mavg_std_report(
         .withColumn("aan_value", aan_value_expr)
         .withColumn("aan_name",  F.lit(metric_name))
         .withColumn("aan",       aan_key)
-        .withColumn(
-            "is_anomaly",
+        .withColumn("is_anomaly",
             ((F.col(metric_col) < lower) | (F.col(metric_col) > upper)) &
-            (cnt_hist >= F.lit(min_points))
-        )
+            (cnt_hist >= F.lit(min_points)))
     )
 
-    # rank by |delta| within (date, metric)
+    # rank by |delta|
     rank_w = W.partitionBy("predictive_date","aan_name").orderBy(F.desc(F.abs(F.col("_delta_num"))))
     out = out.withColumn("_rank", F.dense_rank().over(rank_w))
 
@@ -187,7 +189,7 @@ def run_kpi(label):
         date_col="date",
         metric_col="Amount",
         metric_name=label,
-        days_window=DAYS_WINDOW,
+        lookback_n=LOOKBACK_N,   # 3 prior months
         k=K_FACTOR,
         min_points=MIN_POINTS,
     )
