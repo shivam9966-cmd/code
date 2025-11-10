@@ -1,6 +1,14 @@
 from pyspark.sql import functions as F
 
-# --- target hierarchy and anomaly date ---
+# === 1️⃣ Load the subset dataset ===
+run_folder = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_21-35-42"  # 👈 update timestamp if needed
+subset_path = f"{run_folder}/granular_subset"
+
+print(f"📂 Loading subset data from: {subset_path}")
+subset = spark.read.option("header", True).csv(subset_path)
+print(f"✅ Subset loaded successfully with {subset.count()} rows")
+
+# === 2️⃣ Filter for this hierarchy ===
 target_date = "2022-03-01"
 
 df_check = (
@@ -14,6 +22,15 @@ df_check = (
     .orderBy("date")
 )
 
-# --- show anomaly month + 3 months before it ---
-df_filtered = df_check.filter(F.col("date") <= F.lit(target_date)).orderBy(F.col("date").desc()).limit(4)
-display(df_filtered)
+# === 3️⃣ Show anomaly month + 3 months before ===
+df_filtered = (
+    df_check
+    .filter(F.col("date") <= F.lit(target_date))
+    .orderBy(F.col("date").desc())
+    .limit(4)
+)
+
+print("✅ Filtered data for the hierarchy:")
+display(df_filtered.select("date", "Amount", "account_L5_Description",
+                            "account_L6_Description", "account_L7_Description",
+                            "product_L3_Description", "CC_L1_Description"))
