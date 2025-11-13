@@ -1,11 +1,9 @@
 from pyspark.sql import functions as F
 
-total_2426 = (
+total_till_sep_2025 = (
     granular
-    .withColumn("YEAR", F.year("DATE"))
-    .filter(F.col("YEAR").between(2024, 2026))
+    .filter(F.col("DATE") <= F.lit("2025-09-30"))
     .count()
 )
 
-print("Total rows from 2024 to 2026:", total_2426)
-
+print("Total rows up to 30-Sep-2025:", total_till_sep_2025)
