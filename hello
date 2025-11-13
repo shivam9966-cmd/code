@@ -1,1 +1,11 @@
-validate_aan("<your AAN>", "YYYY-MM-DD")
+# --- Years present in dataset ---
+years_df = (
+    granular
+    .withColumn("YEAR", F.year("DATE"))
+    .groupBy("YEAR")
+    .count()
+    .orderBy("YEAR")
+)
+
+print("Years present in dataset:")
+years_df.show(truncate=False)
