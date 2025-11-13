@@ -1,16 +1,11 @@
 from pyspark.sql import functions as F
 
-# --- Extract year & month ---
-monthly_counts = (
+total_2426 = (
     granular
     .withColumn("YEAR", F.year("DATE"))
-    .withColumn("MONTH", F.month("DATE"))
-    .filter(F.col("YEAR").between(2024, 2026))   # 2024–2026
-    .groupBy("YEAR", "MONTH")
+    .filter(F.col("YEAR").between(2024, 2026))
     .count()
-    .orderBy("YEAR", "MONTH")
 )
 
-print("Month-wise counts for 2024 to 2026:")
-monthly_counts.show(100, truncate=False)
+print("Total rows from 2024 to 2026:", total_2426)
 
