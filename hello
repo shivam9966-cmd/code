@@ -1,11 +1,112 @@
-revenue_var_df = compute_variance(granular, "Revenue")
-opex_var_df    = compute_variance(granular, "Operating Expenses")
-ebitda_var_df  = compute_ebitda_variance(granular)
+def join_with_account(df):
+    return (
+        df.alias("f")
+        .join(account_df.alias("a"), F.col("f.Account_ID") == F.col("a.Account_ID"), "left")
+        .select(
+            "f.*",
+            F.col("a.L4").alias("L4"),
+            F.col("a.L5").alias("L5")
+        )
+    )
 
 
 
 
 
-revenue_var_df.show(truncate=False)
-opex_var_df.show(truncate=False)
-ebitda_var_df.show(truncate=False)
+
+def extract_scenario(df, scenario_name, version_name):
+    return (
+        df.filter(
+            (F.col("SCENARIO") == scenario_name) &
+            (F.col("VERSION") == version_name) &
+            (F.col("YEAR") == 2025)
+        )
+    )
+
+
+
+
+
+def get_revenue(df):
+    return df.filter(F.col("L5") == "REV") \
+             .agg(F.sum("Amount").alias("Revenue"))
+
+def get_opex(df):
+    return df.filter(F.col("L5") == "OPEX") \
+             .agg(F.sum("Amount").alias("OPEX"))
+
+
+
+
+
+
+def compute_kpis(df):
+    
+    rev = df.filter(F.col("L5") == "REV").agg(F.sum("Amount")).collect()[0][0]
+    opex = df.filter(F.col("L5") == "OPEX").agg(F.sum("Amount")).collect()[0][0]
+    
+    # EBITDA = Revenue – OPEX
+    ebitda = (rev or 0) - (opex or 0)
+    
+    return rev or 0, opex or 0, ebitda
+
+
+
+
+
+
+
+
+
+# Join FACT tables with Account table
+plan_joined = join_with_account(plan_df)
+forecast_joined = join_with_account(forecast_df)
+
+# Scenario 1 = PLAN Final
+s1 = extract_scenario(plan_joined, "PLAN", "Final")
+
+# Scenario 2 = F7_5 At Plan Rates
+s2 = extract_scenario(forecast_joined, "F7_5", "At_Plan_Rates")
+
+# Compute totals
+rev_s1, opex_s1, ebitda_s1 = compute_kpis(s1)
+rev_s2, opex_s2, ebitda_s2 = compute_kpis(s2)
+
+# Variances
+rev_var = rev_s2 - rev_s1
+opex_var = opex_s2 - opex_s1
+ebitda_var = ebitda_s2 - ebitda_s1
+
+# Variance %
+rev_var_pct = (rev_var / rev_s1 * 100) if rev_s1 != 0 else None
+opex_var_pct = (opex_var / opex_s1 * 100) if opex_s1 != 0 else None
+ebitda_var_pct = (ebitda_var / ebitda_s1 * 100) if ebitda_s1 != 0 else None
+
+
+
+
+
+
+
+
+print("=== REVENUE VARIANCE ===")
+print("S1:", rev_s1)
+print("S2:", rev_s2)
+print("Variance:", rev_var)
+print("Variance%:", rev_var_pct)
+
+print("\n=== OPEX VARIANCE ===")
+print("S1:", opex_s1)
+print("S2:", opex_s2)
+print("Variance:", opex_var)
+print("Variance%:", opex_var_pct)
+
+print("\n=== EBITDA VARIANCE ===")
+print("S1:", ebitda_s1)
+print("S2:", ebitda_s2)
+print("Variance:", ebitda_var)
+print("Variance%:", ebitda_var_pct)
+
+
+
+
