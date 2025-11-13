@@ -1,21 +1,30 @@
-def compute_variance(df, kpi_type):
+def compute_ebitda_variance(df):
+
+    # Revenue
+    rev_s1 = get_kpi_totals(df, "Revenue", "PLAN", "Final").alias("rev_s1")
+    rev_s2 = get_kpi_totals(df, "Revenue", "F7_5", "At_Plan_Rates").alias("rev_s2")
     
-    # Scenario 1 = Plan Final FY25
-    s1 = get_kpi_totals(df, kpi_type, "PLAN", "Final").alias("s1")
+    # OPEX
+    op_s1 = get_kpi_totals(df, "Operating Expenses", "PLAN", "Final").alias("op_s1")
+    op_s2 = get_kpi_totals(df, "Operating Expenses", "F7_5", "At_Plan_Rates").alias("op_s2")
 
-    # Scenario 2 = F7_5 At Plan Rates FY25
-    s2 = get_kpi_totals(df, kpi_type, "F7_5", "At_Plan_Rates").alias("s2")
-
+    # Join Revenue + OPEX by account group
     joined = (
-        s1.join(s2, "account_L3_Description", "outer")
-          .na.fill(0)
-          .withColumn("Variance", F.col("s2.Amount") - F.col("s1.Amount"))
-          .withColumn(
-              "Variance_percent",
-              F.when(F.col("s1.Amount") != 0,
-                     (F.col("Variance") / F.col("s1.Amount")) * 100
-              ).otherwise(None)
-          )
+        rev_s1.join(rev_s2, "account_L3_Description", "outer")
+              .join(op_s1, "account_L3_Description", "outer")
+              .join(op_s2, "account_L3_Description", "outer")
+              .na.fill(0)
     )
-    
+
+    # Compute EBITDA values
+    joined = (
+        joined.withColumn("EBITDA_S1", F.col("rev_s1.Amount") - F.col("op_s1.Amount"))
+              .withColumn("EBITDA_S2", F.col("rev_s2.Amount") - F.col("op_s2.Amount"))
+              .withColumn("Variance", F.col("EBITDA_S2") - F.col("EBITDA_S1"))
+              .withColumn("Variance_percent",
+                    F.when(F.col("EBITDA_S1") != 0,
+                        (F.col("Variance") / F.col("EBITDA_S1")) * 100)
+              )
+    )
+
     return joined
