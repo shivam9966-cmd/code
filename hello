@@ -1,15 +1,15 @@
-# --- Monthly count for a given year ---
-target_year = 2025
+from pyspark.sql import functions as F
 
-monthly_df = (
+# --- Extract year & month ---
+monthly_counts = (
     granular
     .withColumn("YEAR", F.year("DATE"))
     .withColumn("MONTH", F.month("DATE"))
-    .filter(F.col("YEAR") == target_year)
+    .filter(F.col("YEAR").between(2024, 2026))   # 2024–2026
     .groupBy("YEAR", "MONTH")
     .count()
-    .orderBy("MONTH")
+    .orderBy("YEAR", "MONTH")
 )
 
-print(f"Monthly row counts for {target_year}:")
-monthly_df.show(truncate=False)
+print("Month-wise counts for 2024 to 2026:")
+monthly_counts.show(100, truncate=False)
