@@ -1,11 +1,15 @@
-# --- Years present in dataset ---
-years_df = (
+# --- Monthly count for a given year ---
+target_year = 2025
+
+monthly_df = (
     granular
     .withColumn("YEAR", F.year("DATE"))
-    .groupBy("YEAR")
+    .withColumn("MONTH", F.month("DATE"))
+    .filter(F.col("YEAR") == target_year)
+    .groupBy("YEAR", "MONTH")
     .count()
-    .orderBy("YEAR")
+    .orderBy("MONTH")
 )
 
-print("Years present in dataset:")
-years_df.show(truncate=False)
+print(f"Monthly row counts for {target_year}:")
+monthly_df.show(truncate=False)
