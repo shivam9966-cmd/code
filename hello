@@ -1,37 +1,43 @@
-actuals_df = granular.filter(F.col("FACT_SOURCE") == "ACTUALS")
+from pyspark.sql import functions as F
 
-actuals_count = actuals_df.count()
-print("Actuals count:", actuals_count)
+# 1) Total current row count for the FULL dataset (all years, all fact sources)
+total_all = granular.count()
+print("Total current rows (full dataset, all years & sources):", total_all)
 
+# 2) Filter ACTUALS for year 2025
+actuals_2025 = (
+    granular
+    .filter(
+        (F.col("FACT_SOURCE") == "ACTUALS") &
+        (F.year("DATE") == 2025)
+    )
+)
 
-
+# 3) Month-wise counts for ACTUALS 2025
 monthly_2025_actuals = (
-    actuals_df
-    .withColumn("YEAR", F.year("DATE"))
+    actuals_2025
     .withColumn("MONTH", F.month("DATE"))
-    .filter(F.col("YEAR") == 2025)
     .groupBy("MONTH")
     .count()
     .orderBy("MONTH")
 )
 
+print("Monthly ACTUALS row counts for 2025:")
 monthly_2025_actuals.show()
 
+# 4) Average monthly ACTUALS rows for 2025
 avg_monthly_actuals_2025 = (
     monthly_2025_actuals
     .agg(F.avg("count").alias("avg_rows"))
     .collect()[0]["avg_rows"]
 )
 
-print("Avg monthly (actuals only, 2025):", avg_monthly_actuals_2025)
+print("Average monthly ACTUALS rows in 2025:", avg_monthly_actuals_2025)
 
-
-
-
+# 5) Estimate for 2 missing months (Nov + Dec 2025)
 estimated_two_months = avg_monthly_actuals_2025 * 2
-print("Estimated two months:", estimated_two_months)
+print("Estimated extra rows for Nov + Dec 2025 ACTUALS:", estimated_two_months)
 
-
-
-estimated_actuals_final = actuals_count + estimated_two_months
-print("Estimated Actuals Final Count:", estimated_actuals_final)
+# 6) Final estimated total row count as of end-2025
+estimated_total_end_2025 = total_all + estimated_two_months
+print("Estimated total rows as of end-2025:", estimated_total_end_2025)
