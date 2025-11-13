@@ -1,9 +1,37 @@
-from pyspark.sql import functions as F
+actuals_df = granular.filter(F.col("FACT_SOURCE") == "ACTUALS")
 
-total_till_sep_2025 = (
-    granular
-    .filter(F.col("DATE") <= F.lit("2025-09-30"))
+actuals_count = actuals_df.count()
+print("Actuals count:", actuals_count)
+
+
+
+monthly_2025_actuals = (
+    actuals_df
+    .withColumn("YEAR", F.year("DATE"))
+    .withColumn("MONTH", F.month("DATE"))
+    .filter(F.col("YEAR") == 2025)
+    .groupBy("MONTH")
     .count()
+    .orderBy("MONTH")
 )
 
-print("Total rows up to 30-Sep-2025:", total_till_sep_2025)
+monthly_2025_actuals.show()
+
+avg_monthly_actuals_2025 = (
+    monthly_2025_actuals
+    .agg(F.avg("count").alias("avg_rows"))
+    .collect()[0]["avg_rows"]
+)
+
+print("Avg monthly (actuals only, 2025):", avg_monthly_actuals_2025)
+
+
+
+
+estimated_two_months = avg_monthly_actuals_2025 * 2
+print("Estimated two months:", estimated_two_months)
+
+
+
+estimated_actuals_final = actuals_count + estimated_two_months
+print("Estimated Actuals Final Count:", estimated_actuals_final)
