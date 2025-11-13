@@ -13,3 +13,4 @@ monthly_counts = (
 
 print("Month-wise counts for 2024 to 2026:")
 monthly_counts.show(100, truncate=False)
+
