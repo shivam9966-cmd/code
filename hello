@@ -1,11 +1,21 @@
-def get_kpi_totals(df, kpi_type, scenario, version):
-    return (
-        df.filter(
-            (F.col("KPI") == kpi_type) &
-            (F.col("SCENARIO") == scenario) &
-            (F.col("VERSION") == version) &
-            (F.col("YEAR") == 2025)
-        )
-        .groupBy("account_L3_Description")
-        .agg(F.sum("Amount").alias("Amount"))
+def compute_variance(df, kpi_type):
+    
+    # Scenario 1 = Plan Final FY25
+    s1 = get_kpi_totals(df, kpi_type, "PLAN", "Final").alias("s1")
+
+    # Scenario 2 = F7_5 At Plan Rates FY25
+    s2 = get_kpi_totals(df, kpi_type, "F7_5", "At_Plan_Rates").alias("s2")
+
+    joined = (
+        s1.join(s2, "account_L3_Description", "outer")
+          .na.fill(0)
+          .withColumn("Variance", F.col("s2.Amount") - F.col("s1.Amount"))
+          .withColumn(
+              "Variance_percent",
+              F.when(F.col("s1.Amount") != 0,
+                     (F.col("Variance") / F.col("s1.Amount")) * 100
+              ).otherwise(None)
+          )
     )
+    
+    return joined
