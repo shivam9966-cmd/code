@@ -1,112 +1,148 @@
-def join_with_account(df):
-    return (
-        df.alias("f")
-        .join(account_df.alias("a"), F.col("f.Account_ID") == F.col("a.Account_ID"), "left")
-        .select(
-            "f.*",
-            F.col("a.L4").alias("L4"),
-            F.col("a.L5").alias("L5")
-        )
+from pyspark.sql import functions as F
+
+# ========================================================================
+# 1. Convert Spark DF to JSON Helper (your original function)
+# ========================================================================
+def spark_df_to_json(df):
+    return [row.asDict() for row in df.collect()]
+
+# ========================================================================
+# 2. FILTERED DATA ANALYSIS (REVENUE, OPEX, EBITDA supported)
+# ========================================================================
+def filtered_data_analysis(dataset, amount_type, scenario, year, version):
+
+    granular_df = (
+        dataset.alias("d")
+        .join(costcenter_df.alias("cc"), F.col("d.COSTCENTER") == F.col("cc.CostCenter"), "left")
+        .join(product_df.alias("pd"), F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
+        .join(account_df.alias("ad"), F.col("d.ACCOUNT") == F.col("ad.Account"), "left")
     )
-
-
-
-
-
-
-def extract_scenario(df, scenario_name, version_name):
-    return (
-        df.filter(
-            (F.col("SCENARIO") == scenario_name) &
-            (F.col("VERSION") == version_name) &
-            (F.col("YEAR") == 2025)
-        )
+    
+    # --------------------------------------------------------------------
+    # ACCOUNT FILTERS
+    # --------------------------------------------------------------------
+    # EBITDA → from L4 column
+    # Revenue / OPEX → from L5 Description (same as your current code)
+    if amount_type == "EBITDA":
+        account_condition = (F.col("ad.L4") == "EBITDA")
+    else:
+        account_condition = (F.col("ad.L5_Description").isin(amount_type))
+    
+    # --------------------------------------------------------------------
+    # SCENARIO, YEAR, VERSION FILTERS
+    # --------------------------------------------------------------------
+    scenario_condition = (
+        (F.col("d.SCENARIO").isin(scenario)) &
+        (F.col("d.YEAR") == year) &
+        (F.col("d.VERSION") == version)
     )
-
-
-
-
-
-def get_revenue(df):
-    return df.filter(F.col("L5") == "REV") \
-             .agg(F.sum("Amount").alias("Revenue"))
-
-def get_opex(df):
-    return df.filter(F.col("L5") == "OPEX") \
-             .agg(F.sum("Amount").alias("OPEX"))
-
-
-
-
-
-
-def compute_kpis(df):
     
-    rev = df.filter(F.col("L5") == "REV").agg(F.sum("Amount")).collect()[0][0]
-    opex = df.filter(F.col("L5") == "OPEX").agg(F.sum("Amount")).collect()[0][0]
+    if scenario != "" and year != "" and version != "":
+        granular_df = granular_df.filter(account_condition & scenario_condition)
+    else:
+        granular_df = granular_df.filter(account_condition)
     
-    # EBITDA = Revenue – OPEX
-    ebitda = (rev or 0) - (opex or 0)
+    # --------------------------------------------------------------------
+    # SELECT FIELDS (same as your existing output)
+    # --------------------------------------------------------------------
+    granular_df = granular_df.select(
+        F.col("pd.L3_Description").alias("product_L3_Description"),
+        F.col("pd.L4_Description").alias("product_L4_Description"),
+        F.col("pd.L5_Description").alias("product_L5_Description"),
+        
+        F.col("ad.L3_Description").alias("account_L3_Description"),
+        F.col("ad.L4_Description").alias("account_L4_Description"),
+        F.col("ad.L5_Description").alias("account_L5_Description"),
+        
+        F.col("d.COSTCENTER"),
+        F.col("d.PRODUCTLINE"),
+        F.col("d.ACCOUNT"),
+        F.col("d.SCENARIO"),
+        F.col("d.VERSION"),
+        F.col("d.Amount"),
+        F.col("d.YEAR")
+    )
     
-    return rev or 0, opex or 0, ebitda
+    return granular_df
 
 
+# ========================================================================
+# 3. VARIANCE ANALYSIS (YOUR EXISTING LOGIC — kept intact)
+# ========================================================================
+def variance_analysis(df1, df2, amount_type):
+
+    # Join on account L6 description (same as your existing logic)
+    joined = df1.alias("d1").join(df2.alias("d2"),
+                                  "account_L6_Description",
+                                  "outer").na.fill(0)
+
+    # FY25 variance and variance%
+    result = joined.withColumn("variance", 
+                               F.col("d2.FY25") - F.col("d1.FY25")) \
+                   .withColumn(
+                       "variance_percent",
+                       F.when(F.col("d1.FY25") != 0,
+                              (F.col("d2.FY25") - F.col("d1.FY25")) / F.col("d1.FY25") * 100
+                       ).otherwise(0)
+                   )
+    
+    return result.toPandas()
 
 
+# ========================================================================
+# 4. APPLY FOR THE 3 KPIs (REVENUE, OPEX, EBITDA)
+# ========================================================================
+
+# ------------------------ REVENUE ------------------------
+revenue_df1 = filtered_data_analysis(plan_df, 
+                                     amount_type=["Revenue"],
+                                     scenario="PLAN",
+                                     year="FY25",
+                                     version="Final")
+
+revenue_df2 = filtered_data_analysis(forecast_df,
+                                     amount_type=["Revenue"],
+                                     scenario="F7_5",
+                                     year="FY25",
+                                     version="At_Plan_Rates")
+
+revenue_var = variance_analysis(revenue_df1, revenue_df2, "Revenue")
 
 
+# ------------------------ OPEX ------------------------
+opex_df1 = filtered_data_analysis(plan_df,
+                                  amount_type=["Operating Expenses"],
+                                  scenario="PLAN",
+                                  year="FY25",
+                                  version="Final")
+
+opex_df2 = filtered_data_analysis(forecast_df,
+                                  amount_type=["Operating Expenses"],
+                                  scenario="F7_5",
+                                  year="FY25",
+                                  version="At_Plan_Rates")
+
+opex_var = variance_analysis(opex_df1, opex_df2, "Operating Expenses")
 
 
+# ------------------------ EBITDA (using L4) ------------------------
+ebitda_df1 = filtered_data_analysis(plan_df,
+                                    amount_type="EBITDA",
+                                    scenario="PLAN",
+                                    year="FY25",
+                                    version="Final")
 
-# Join FACT tables with Account table
-plan_joined = join_with_account(plan_df)
-forecast_joined = join_with_account(forecast_df)
+ebitda_df2 = filtered_data_analysis(forecast_df,
+                                    amount_type="EBITDA",
+                                    scenario="F7_5",
+                                    year="FY25",
+                                    version="At_Plan_Rates")
 
-# Scenario 1 = PLAN Final
-s1 = extract_scenario(plan_joined, "PLAN", "Final")
+ebitda_var = variance_analysis(ebitda_df1, ebitda_df2, "EBITDA")
 
-# Scenario 2 = F7_5 At Plan Rates
-s2 = extract_scenario(forecast_joined, "F7_5", "At_Plan_Rates")
-
-# Compute totals
-rev_s1, opex_s1, ebitda_s1 = compute_kpis(s1)
-rev_s2, opex_s2, ebitda_s2 = compute_kpis(s2)
-
-# Variances
-rev_var = rev_s2 - rev_s1
-opex_var = opex_s2 - opex_s1
-ebitda_var = ebitda_s2 - ebitda_s1
-
-# Variance %
-rev_var_pct = (rev_var / rev_s1 * 100) if rev_s1 != 0 else None
-opex_var_pct = (opex_var / opex_s1 * 100) if opex_s1 != 0 else None
-ebitda_var_pct = (ebitda_var / ebitda_s1 * 100) if ebitda_s1 != 0 else None
-
-
-
-
-
-
-
-
-print("=== REVENUE VARIANCE ===")
-print("S1:", rev_s1)
-print("S2:", rev_s2)
-print("Variance:", rev_var)
-print("Variance%:", rev_var_pct)
-
-print("\n=== OPEX VARIANCE ===")
-print("S1:", opex_s1)
-print("S2:", opex_s2)
-print("Variance:", opex_var)
-print("Variance%:", opex_var_pct)
-
-print("\n=== EBITDA VARIANCE ===")
-print("S1:", ebitda_s1)
-print("S2:", ebitda_s2)
-print("Variance:", ebitda_var)
-print("Variance%:", ebitda_var_pct)
-
-
-
-
+# ========================================================================
+# 5. OUTPUTS
+# ========================================================================
+print("REVENUE VARIANCE:\n", revenue_var)
+print("OPEX VARIANCE:\n", opex_var)
+print("EBITDA VARIANCE:\n", ebitda_var)
