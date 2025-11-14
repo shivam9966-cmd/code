@@ -1,37 +1,58 @@
-def variance_analysis(df1, df2, amount_type):
+# ================= Revenue =================
+rev_df_plan = filtered_data_analysis(
+    plan_df, 
+    amount_type="Revenue",
+    scenario=["PLAN"],
+    year="FY25",
+    version="Final"
+)
 
-    # Pivot scenario 1
-    pivot1 = (
-        df1.groupBy("account_L6_Description")
-           .pivot("YEAR")
-           .sum("Amount")
-           .alias("d1")
-    )
+rev_df_f7 = filtered_data_analysis(
+    forecast_df, 
+    amount_type="Revenue",
+    scenario=["F7_5"],
+    year="FY25",
+    version="At_Plan_Rates"
+)
 
-    # Pivot scenario 2
-    pivot2 = (
-        df2.groupBy("account_L6_Description")
-           .pivot("YEAR")
-           .sum("Amount")
-           .alias("d2")
-    )
+rev_var_df = variance_analysis(rev_df_plan, rev_df_f7, "Revenue")
 
-    # Outer join
-    joined = (
-        pivot1.alias("d1")
-              .join(pivot2.alias("d2"), "account_L6_Description", "outer")
-              .na.fill(0)
-    )
 
-    # Only FY25 being compared
-    joined = joined.withColumn(
-        "variance",
-        F.col("d2.FY25") - F.col("d1.FY25")
-    ).withColumn(
-        "variance_percent",
-        F.when(F.col("d1.FY25") != 0,
-               (F.col("d2.FY25") - F.col("d1.FY25")) / F.col("d1.FY25") * 100
-        ).otherwise(0)
-    )
+# ================= OPEX =================
+opex_df_plan = filtered_data_analysis(
+    plan_df, 
+    amount_type="Operating Expenses",
+    scenario=["PLAN"],
+    year="FY25",
+    version="Final"
+)
 
-    return joined.toPandas()
+opex_df_f7 = filtered_data_analysis(
+    forecast_df, 
+    amount_type="Operating Expenses",
+    scenario=["F7_5"],
+    year="FY25",
+    version="At_Plan_Rates"
+)
+
+opex_var_df = variance_analysis(opex_df_plan, opex_df_f7, "Operating Expenses")
+
+
+# ================= EBITDA =================
+ebitda_df_plan = filtered_data_analysis(
+    plan_df, 
+    amount_type="EBITDA",
+    scenario=["PLAN"],
+    year="FY25",
+    version="Final"
+)
+
+ebitda_df_f7 = filtered_data_analysis(
+    forecast_df, 
+    amount_type="EBITDA",
+    scenario=["F7_5"],
+    year="FY25",
+    version="At_Plan_Rates"
+)
+
+ebitda_var_df = variance_analysis(ebitda_df_plan, ebitda_df_f7, "EBITDA")
