@@ -1,53 +1,8 @@
-def variance_analysis(df1, df2, amount_type):
-    # Get filtered data for each scenario
-    df1_f = filtered_data_analysis(
-        df1, amount_type=amount_type,
-        scenario=["PLAN"], year="FY25", version="Final"
-    )
-    df2_f = filtered_data_analysis(
-        df2, amount_type=amount_type,
-        scenario=["F7_5"], year="FY25", version="At_Plan_Rates"
-    )
+# Revenue
+rev_var_df = variance_analysis(plan_df, forecast_df, amount_type="Revenue")
 
-    # ----- Second-level filter on L5 only for Revenue / OPEX -----
-    if amount_type in ("Revenue", "Operating Expenses"):
-        df1_f = df1_f.filter(F.col("account_L5_Description") == amount_type)
-        df2_f = df2_f.filter(F.col("account_L5_Description") == amount_type)
-    # For EBITDA: DO NOT touch L5 – we already constrained with L4
+# OPEX
+opex_var_df = variance_analysis(plan_df, forecast_df, amount_type="Operating Expenses")
 
-    # ----- Pivot to FY23 / FY24 / FY25 etc (simplified to FY25 here) -----
-    pivot1 = (
-        df1_f.groupBy("account_L6_Description")
-             .pivot("YEAR")
-             .sum("Amount")
-             .alias("d1")
-    )
-    pivot2 = (
-        df2_f.groupBy("account_L6_Description")
-             .pivot("YEAR")
-             .sum("Amount")
-             .alias("d2")
-    )
-
-    joined = (
-        pivot1.alias("d1")
-              .join(pivot2.alias("d2"), "account_L6_Description", "outer")
-              .na.fill(0)
-    )
-
-    # If you also have FY23/FY24, add them here
-    year_cols = ["FY25"]   # extend if needed
-
-    for col_name in year_cols:
-        joined = joined.withColumn(
-            f"{col_name}_variance",
-            F.col(f"d2.{col_name}") - F.col(f"d1.{col_name}")
-        ).withColumn(
-            f"{col_name}_variance_percent",
-            F.when(F.col(f"d1.{col_name}") != 0,
-                   (F.col(f"d2.{col_name}") - F.col(f"d1.{col_name}"))
-                   / F.col(f"d1.{col_name}") * 100
-            ).otherwise(0)
-        )
-
-    return joined.toPandas()
+# EBITDA (NEW)
+ebitda_var_df = variance_analysis(plan_df, forecast_df, amount_type="EBITDA")
