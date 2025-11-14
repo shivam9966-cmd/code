@@ -1,58 +1,72 @@
-# ================= Revenue =================
-rev_df_plan = filtered_data_analysis(
-    plan_df, 
-    amount_type="Revenue",
-    scenario=["PLAN"],
-    year="FY25",
-    version="Final"
+from pyspark.sql import functions as F
+
+# ===================================================================
+# Helper function to get totals for one KPI and one scenario
+# ===================================================================
+def get_total(df, kpi):
+
+    if kpi == "Revenue":
+        return df.filter(F.col("L5_Description") == "Revenue") \
+                 .agg(F.sum("Amount")).collect()[0][0] or 0
+
+    elif kpi == "OPEX":
+        return df.filter(F.col("L5_Description") == "Operating Expenses") \
+                 .agg(F.sum("Amount")).collect()[0][0] or 0
+
+    else:
+        raise Exception("Invalid KPI")
+
+
+# ===================================================================
+# Filter granular data for each scenario
+# ===================================================================
+plan_fy25 = granular_df.filter(
+    (F.col("SCENARIO") == "PLAN") &
+    (F.col("VERSION") == "Final") &
+    (F.col("YEAR") == "FY25")
 )
 
-rev_df_f7 = filtered_data_analysis(
-    forecast_df, 
-    amount_type="Revenue",
-    scenario=["F7_5"],
-    year="FY25",
-    version="At_Plan_Rates"
+f75_fy25 = granular_df.filter(
+    (F.col("SCENARIO") == "F7_5") &
+    (F.col("VERSION") == "At_Plan_Rates") &
+    (F.col("YEAR") == "FY25")
 )
 
-rev_var_df = variance_analysis(rev_df_plan, rev_df_f7, "Revenue")
+# ===================================================================
+# Compute KPI totals for both scenarios
+# ===================================================================
+rev_plan = get_total(plan_fy25, "Revenue")
+rev_f75  = get_total(f75_fy25, "Revenue")
 
+opex_plan = get_total(plan_fy25, "OPEX")
+opex_f75  = get_total(f75_fy25, "OPEX")
 
-# ================= OPEX =================
-opex_df_plan = filtered_data_analysis(
-    plan_df, 
-    amount_type="Operating Expenses",
-    scenario=["PLAN"],
-    year="FY25",
-    version="Final"
-)
+# EBITDA = Revenue - OPEX
+ebitda_plan = rev_plan - opex_plan
+ebitda_f75  = rev_f75  - opex_f75
 
-opex_df_f7 = filtered_data_analysis(
-    forecast_df, 
-    amount_type="Operating Expenses",
-    scenario=["F7_5"],
-    year="FY25",
-    version="At_Plan_Rates"
-)
+# ===================================================================
+# Compute Variances
+# ===================================================================
+rev_var = rev_f75 - rev_plan
+opex_var = opex_f75 - opex_plan
+ebitda_var = ebitda_f75 - ebitda_plan
 
-opex_var_df = variance_analysis(opex_df_plan, opex_df_f7, "Operating Expenses")
+rev_var_pct = (rev_var / rev_plan * 100) if rev_plan != 0 else None
+opex_var_pct = (opex_var / opex_plan * 100) if opex_plan != 0 else None
+ebitda_var_pct = (ebitda_var / ebitda_plan * 100) if ebitda_plan != 0 else None
 
+# ===================================================================
+# Build Final Output Table
+# ===================================================================
+import pandas as pd
 
-# ================= EBITDA =================
-ebitda_df_plan = filtered_data_analysis(
-    plan_df, 
-    amount_type="EBITDA",
-    scenario=["PLAN"],
-    year="FY25",
-    version="Final"
-)
+output = pd.DataFrame({
+    "KPI": ["Revenue", "OPEX", "EBITDA"],
+    "PLAN_FY25": [rev_plan, opex_plan, ebitda_plan],
+    "F7_5_FY25": [rev_f75, opex_f75, ebitda_f75],
+    "Variance": [rev_var, opex_var, ebitda_var],
+    "Variance%": [rev_var_pct, opex_var_pct, ebitda_var_pct]
+})
 
-ebitda_df_f7 = filtered_data_analysis(
-    forecast_df, 
-    amount_type="EBITDA",
-    scenario=["F7_5"],
-    year="FY25",
-    version="At_Plan_Rates"
-)
-
-ebitda_var_df = variance_analysis(ebitda_df_plan, ebitda_df_f7, "EBITDA")
+output
