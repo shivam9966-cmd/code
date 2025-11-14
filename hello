@@ -1,3 +1,75 @@
-granular_df = spark.read.option("header", True).csv(
-    "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-09_00-15-08/granular_full"
+def kpi_breakdown(slice_df, kpi_name):
+    
+    if kpi_name == "Revenue":
+        kpi_df = slice_df.filter(F.col("Account_L5_Description") == "Revenue")
+        
+    elif kpi_name == "OPEX":
+        kpi_df = slice_df.filter(F.col("Account_L5_Description") == "Operating Expenses")
+    
+    else:
+        raise Exception("Only Revenue and OPEX have drilldowns")
+    
+    breakdown = (
+        kpi_df.groupBy("Account_L6_Description", "Account_L7_Description")
+              .agg(F.sum("Amount").alias("Amount"))
+    )
+    
+    return breakdown
+
+
+
+
+
+
+
+
+rev_plan_break = kpi_breakdown(plan_fy25, "Revenue").withColumnRenamed("Amount", "PLAN_FY25")
+rev_f75_break  = kpi_breakdown(f75_fy25,  "Revenue").withColumnRenamed("Amount", "F7_5_FY25")
+
+revenue_drilldown = (
+    rev_plan_break.join(
+        rev_f75_break,
+        on=["Account_L6_Description", "Account_L7_Description"],
+        how="outer"
+    )
+    .fillna(0)
+    .withColumn("Variance",      F.col("F7_5_FY25") - F.col("PLAN_FY25"))
+    .withColumn("Variance%", 
+         F.when(F.col("PLAN_FY25") != 0,
+                (F.col("Variance") / F.col("PLAN_FY25")) * 100)
+          .otherwise(None)
+    )
 )
+
+revenue_drilldown_df = revenue_drilldown.toPandas()
+revenue_drilldown_df
+
+
+
+
+
+
+
+
+
+opex_plan_break = kpi_breakdown(plan_fy25, "OPEX").withColumnRenamed("Amount", "PLAN_FY25")
+opex_f75_break  = kpi_breakdown(f75_fy25,  "OPEX").withColumnRenamed("Amount", "F7_5_FY25")
+
+opex_drilldown = (
+    opex_plan_break.join(
+        opex_f75_break,
+        on=["Account_L6_Description", "Account_L7_Description"],
+        how="outer"
+    )
+    .fillna(0)
+    .withColumn("Variance",      F.col("F7_5_FY25") - F.col("PLAN_FY25"))
+    .withColumn("Variance%", 
+         F.when(F.col("PLAN_FY25") != 0,
+                (F.col("Variance") / F.col("PLAN_FY25")) * 100)
+          .otherwise(None)
+    )
+)
+
+opex_drilldown_df = opex_drilldown.toPandas()
+opex_drilldown_df
+
