@@ -1,8 +1,16 @@
+# ============================================================
+# LOAD granular file (important!)
+# ============================================================
+
+granular_df = spark.read \
+    .option("header", True) \
+    .csv("Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-xx-xx-xx/granular_full")
+
 from pyspark.sql import functions as F
 
-# ===================================================================
-# Helper function to get totals for one KPI and one scenario
-# ===================================================================
+# ============================================================
+# Helper: Get KPI totals
+# ============================================================
 def get_total(df, kpi):
 
     if kpi == "Revenue":
@@ -17,9 +25,10 @@ def get_total(df, kpi):
         raise Exception("Invalid KPI")
 
 
-# ===================================================================
-# Filter granular data for each scenario
-# ===================================================================
+# ============================================================
+# Filter Scenario 1 vs Scenario 2
+# ============================================================
+
 plan_fy25 = granular_df.filter(
     (F.col("SCENARIO") == "PLAN") &
     (F.col("VERSION") == "Final") &
@@ -32,12 +41,15 @@ f75_fy25 = granular_df.filter(
     (F.col("YEAR") == "FY25")
 )
 
-# ===================================================================
-# Compute KPI totals for both scenarios
-# ===================================================================
+# ============================================================
+# Compute KPI totals
+# ============================================================
+
+# Revenue
 rev_plan = get_total(plan_fy25, "Revenue")
 rev_f75  = get_total(f75_fy25, "Revenue")
 
+# OPEX
 opex_plan = get_total(plan_fy25, "OPEX")
 opex_f75  = get_total(f75_fy25, "OPEX")
 
@@ -45,9 +57,10 @@ opex_f75  = get_total(f75_fy25, "OPEX")
 ebitda_plan = rev_plan - opex_plan
 ebitda_f75  = rev_f75  - opex_f75
 
-# ===================================================================
-# Compute Variances
-# ===================================================================
+# ============================================================
+# Variances
+# ============================================================
+
 rev_var = rev_f75 - rev_plan
 opex_var = opex_f75 - opex_plan
 ebitda_var = ebitda_f75 - ebitda_plan
@@ -56,9 +69,10 @@ rev_var_pct = (rev_var / rev_plan * 100) if rev_plan != 0 else None
 opex_var_pct = (opex_var / opex_plan * 100) if opex_plan != 0 else None
 ebitda_var_pct = (ebitda_var / ebitda_plan * 100) if ebitda_plan != 0 else None
 
-# ===================================================================
-# Build Final Output Table
-# ===================================================================
+# ============================================================
+# Final Output
+# ============================================================
+
 import pandas as pd
 
 output = pd.DataFrame({
