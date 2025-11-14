@@ -1,61 +1,37 @@
-from pyspark.sql import functions as F
+def variance_analysis(df1, df2, amount_type):
 
-def filtered_data_analysis(dataset, amount_type, scenario, year, version):
-
-    granular_df = (
-        dataset.alias("d")
-        .join(costcenter_df.alias("cc"), F.col("d.COSTCENTER") == F.col("cc.CostCenter"), "left")
-        .join(product_df.alias("pd"), F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
-        .join(account_df.alias("ad"), F.col("d.ACCOUNT") == F.col("ad.Account"), "left")
+    # Pivot scenario 1
+    pivot1 = (
+        df1.groupBy("account_L6_Description")
+           .pivot("YEAR")
+           .sum("Amount")
+           .alias("d1")
     )
 
-    # ============================================================
-    # CORRECT KPI FILTERS
-    # ============================================================
-    if amount_type == "EBITDA":
-        # EBITDA is identified via L4 column
-        account_condition = (F.col("ad.L4") == "EBITDA")
-
-    elif amount_type == "Revenue":
-        # Revenue identified via L5_Description
-        account_condition = (F.col("ad.L5_Description") == "Revenue")
-
-    elif amount_type == "Operating Expenses":
-        # OPEX identified via L5_Description
-        account_condition = (F.col("ad.L5_Description") == "Operating Expenses")
-
-    else:
-        raise Exception("Invalid amount_type")
-
-    # ============================================================
-    # Scenario + Version + Year filters
-    # ============================================================
-    scenario_condition = (
-        F.col("d.SCENARIO").isin(scenario)
-        & (F.col("d.YEAR") == year)
-        & (F.col("d.VERSION") == version)
+    # Pivot scenario 2
+    pivot2 = (
+        df2.groupBy("account_L6_Description")
+           .pivot("YEAR")
+           .sum("Amount")
+           .alias("d2")
     )
 
-    granular_df = granular_df.filter(account_condition & scenario_condition)
-
- 
-    granular_df = granular_df.select(
-        F.col("pd.L3_Description").alias("product_L3_Description"),
-        F.col("pd.L4_Description").alias("product_L4_Description"),
-        F.col("pd.L5_Description").alias("product_L5_Description"),
-
-        F.col("ad.L3_Description").alias("account_L3_Description"),
-        F.col("ad.L4_Description").alias("account_L4_Description"),
-        F.col("ad.L5_Description").alias("account_L5_Description"),
-        F.col("ad.L6_Description").alias("account_L6_Description"),  # REQUIRED FOR PIVOT
-
-        F.col("d.COSTCENTER"),
-        F.col("d.PRODUCTLINE"),
-        F.col("d.ACCOUNT"),
-        F.col("d.SCENARIO"),
-        F.col("d.VERSION"),
-        F.col("d.Amount"),
-        F.col("d.YEAR")
+    # Outer join
+    joined = (
+        pivot1.alias("d1")
+              .join(pivot2.alias("d2"), "account_L6_Description", "outer")
+              .na.fill(0)
     )
 
-    return granular_df
+    # Only FY25 being compared
+    joined = joined.withColumn(
+        "variance",
+        F.col("d2.FY25") - F.col("d1.FY25")
+    ).withColumn(
+        "variance_percent",
+        F.when(F.col("d1.FY25") != 0,
+               (F.col("d2.FY25") - F.col("d1.FY25")) / F.col("d1.FY25") * 100
+        ).otherwise(0)
+    )
+
+    return joined.toPandas()
