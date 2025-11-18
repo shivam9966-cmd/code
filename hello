@@ -1,12 +1,1 @@
-output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/oct_fy25_single"
-
-(
-    oct_fy25
-        .coalesce(1)              # 🔥 forces Spark to write only ONE file
-        .write
-        .mode("overwrite")
-        .option("header", True)
-        .csv(output_path)
-)
-
-print("Saved as a single CSV file at:", output_path)
+df = pd.read_csv("C:\\Users\\156782242\\Downloads\\oct-25\\par-abc.csv")
