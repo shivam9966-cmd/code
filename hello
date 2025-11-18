@@ -1,6 +1,10 @@
+# Filter October FY25
 oct_fy25 = granular_df.filter(
     (F.col("YEAR") == "FY25") &
     (F.month(F.col("DATE")) == 10)
 )
 
-oct_fy25.show(50, truncate=False)
+# Convert to Pandas table for clean display
+oct_table = oct_fy25.toPandas()
+
+oct_table
