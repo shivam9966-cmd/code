@@ -1,9 +1,7 @@
-unique_dates = (
-    oct_fy25
-        .select("DATE")
-        .distinct()
-        .orderBy("DATE")
-        .toPandas()
-)
+# Replace this with your desired output folder
+output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/oct_fy25_data"
 
-unique_dates
+# Save as CSV
+oct_fy25.write.mode("overwrite").option("header", True).csv(output_path)
+
+print("Saved successfully at:", output_path)
