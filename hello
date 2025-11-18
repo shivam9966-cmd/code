@@ -1,10 +1,9 @@
-# Filter October FY25
-oct_fy25 = granular_df.filter(
-    (F.col("YEAR") == "FY25") &
-    (F.month(F.col("DATE")) == 10)
+unique_dates = (
+    oct_fy25
+        .select("DATE")
+        .distinct()
+        .orderBy("DATE")
+        .toPandas()
 )
 
-# Convert to Pandas table for clean display
-oct_table = oct_fy25.toPandas()
-
-oct_table
+unique_dates
