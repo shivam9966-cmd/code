@@ -1,7 +1,12 @@
-# Replace this with your desired output folder
-output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/oct_fy25_data"
+output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/oct_fy25_single"
 
-# Save as CSV
-oct_fy25.write.mode("overwrite").option("header", True).csv(output_path)
+(
+    oct_fy25
+        .coalesce(1)              # 🔥 forces Spark to write only ONE file
+        .write
+        .mode("overwrite")
+        .option("header", True)
+        .csv(output_path)
+)
 
-print("Saved successfully at:", output_path)
+print("Saved as a single CSV file at:", output_path)
