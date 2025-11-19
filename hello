@@ -1,25 +1,9 @@
-from pyspark.sql import functions as F
-
-# Ensure DATE column is proper date type
-granular_df = granular_df.withColumn("DATE", F.to_date("DATE"))
-
-# Filter June 2025
-june_2025 = granular_df.filter(
-    (F.year(F.col("DATE")) == 2025) &
-    (F.month(F.col("DATE")) == 6)
+unique_dates = (
+    june_2025_recurring
+        .select("DATE")
+        .distinct()
+        .orderBy("DATE")
+        .toPandas()
 )
 
-# Filter Revenue (L5)
-june_2025_revenue = june_2025.filter(
-    F.col("Account_L5_Description") == "Revenue"
-)
-
-# Filter Recurring Revenue (L6)
-june_2025_recurring = june_2025_revenue.filter(
-    F.col("Account_L6_Description") == "Recurring Revenue"
-)
-
-# Convert to Pandas DataFrame (for proper table view)
-june_2025_recurring_table = june_2025_recurring.toPandas()
-
-june_2025_recurring_table
+unique_dates
