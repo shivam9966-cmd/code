@@ -1,9 +1,1 @@
-unique_dates = (
-    june_2025_recurring
-        .select("DATE")
-        .distinct()
-        .orderBy("DATE")
-        .toPandas()
-)
-
-unique_dates
+june_2025_recurring_revenue.agg(F.sum("Amount")).show()
