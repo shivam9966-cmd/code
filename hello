@@ -1,7 +1,19 @@
-SELECT table_name 
-FROM information_schema.tables 
-WHERE table_schema = 'public';
+granular_df = spark.read.option("header", True).csv(
+    "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-09_00-15-08/granular_full"
+)
+
+# Cast Amount to double
+granular_df = granular_df.withColumn("Amount", F.col("Amount").cast("double"))
 
 
 
-SELECT pg_size_pretty(pg_total_relation_size('one_month_data'));
+rec_rev_june_2025 = (
+    granular_df
+        .filter(F.col("YEAR") == "FY25")
+        .filter(F.month(F.col("DATE")) == 6)
+        .filter(F.col("Account_L5_Description") == "Revenue")
+        .filter(F.col("Product_L4_Description") == "Recurring Revenue")
+        .agg(F.sum("Amount").alias("Recurring_Revenue_June_2025"))
+)
+
+rec_rev_june_2025.show()
