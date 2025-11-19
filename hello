@@ -1,1 +1,20 @@
-granular_df.printSchema()
+# Ensure DATE is a proper date
+granular_df = granular_df.withColumn("DATE", F.to_date("DATE"))
+
+june_2025 = granular_df.filter(
+    (F.year(F.col("DATE")) == 2025) &
+    (F.month(F.col("DATE")) == 6)
+)
+
+# Revenue (L5)
+rev_june = june_2025.filter(F.col("Account_L5_Description") == "Revenue")
+
+# Recurring Revenue (L6)
+rec_june = rev_june.filter(F.col("Account_L6_Description") == "Recurring Revenue")
+
+rec_june.show(20, truncate=False)
+
+
+
+
+rec_june.agg(F.sum("Amount").alias("sum")).show()
