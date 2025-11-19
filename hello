@@ -1,3 +1,7 @@
-engine.execute("""
-    SELECT pg_size_pretty(pg_relation_size('one_month_data'));
-""").fetchall()
+SELECT table_name 
+FROM information_schema.tables 
+WHERE table_schema = 'public';
+
+
+
+SELECT pg_size_pretty(pg_total_relation_size('one_month_data'));
