@@ -1,1 +1,1 @@
-granular_df = granular_df.withColumn("Amount", F.col("Amount").cast("double"))
+granular_df.printSchema()
