@@ -1,19 +1,26 @@
-granular_df = spark.read.option("header", True).csv(
-    "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-09_00-15-08/granular_full"
+from pyspark.sql import functions as F
+
+# Make sure DATE is a proper date type
+granular_df = granular_df.withColumn("DATE", F.to_date("DATE"))
+
+#  Filter for June 2025 first
+june_2025 = granular_df.filter(
+    (F.year(F.col("DATE")) == 2025) &
+    (F.month(F.col("DATE")) == 6)
 )
 
-# Cast Amount to double
-granular_df = granular_df.withColumn("Amount", F.col("Amount").cast("double"))
-
-
-
-rec_rev_june_2025 = (
-    granular_df
-        .filter(F.col("YEAR") == "FY25")
-        .filter(F.month(F.col("DATE")) == 6)
-        .filter(F.col("Account_L5_Description") == "Revenue")
-        .filter(F.col("Product_L4_Description") == "Recurring Revenue")
-        .agg(F.sum("Amount").alias("Recurring_Revenue_June_2025"))
+# From that, keep only Revenue rows (L5)
+june_2025_revenue = june_2025.filter(
+    F.col("Account_L5_Description") == "Revenue"
 )
 
-rec_rev_june_2025.show()
+# From Revenue, keep only Recurring Revenue (L6)
+june_2025_recurring_revenue = june_2025_revenue.filter(
+    F.col("Account_L6_Description") == "Recurring Revenue"
+)
+
+# Show all rows (or increase limit if needed)
+june_2025_recurring_revenue.show(100, truncate=False)
+
+# Optional: see how many rows you’re summing over
+print("Row count:", june_2025_recurring_revenue.count())
