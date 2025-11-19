@@ -1,1 +1,1 @@
-june_2025_recurring_revenue.agg(F.sum("Amount")).show()
+granular_df = granular_df.withColumn("Amount", F.col("Amount").cast("double"))
