@@ -1,20 +1,31 @@
-# Ensure DATE is a proper date
+from pyspark.sql import functions as F
+
+# Ensure DATE is converted to proper date
 granular_df = granular_df.withColumn("DATE", F.to_date("DATE"))
 
+# Filter June 2025
 june_2025 = granular_df.filter(
     (F.year(F.col("DATE")) == 2025) &
     (F.month(F.col("DATE")) == 6)
 )
 
-# Revenue (L5)
-rev_june = june_2025.filter(F.col("Account_L5_Description") == "Revenue")
+# -----------------------------
+# Revenue (L5 = "REV")
+# -----------------------------
+rev_june = june_2025.filter(F.col("Account_L5") == "REV") \
+                    .agg(F.sum("Amount").alias("Revenue_June_2025"))
 
-# Recurring Revenue (L6)
-rec_june = rev_june.filter(F.col("Account_L6_Description") == "Recurring Revenue")
+# -----------------------------
+#  Operating Expenses (L5 = "OPEX")
+# -----------------------------
+opex_june = june_2025.filter(F.col("Account_L5") == "OPEX") \
+                     .agg(F.sum("Amount").alias("OPEX_June_2025"))
 
-rec_june.show(20, truncate=False)
+# -----------------------------
+#  COMPUTE EBITDA = REV - OPEX
+# -----------------------------
+ebitda_june = rev_june.crossJoin(opex_june) \
+                       .withColumn("EBITDA_June_2025",
+                                   F.col("Revenue_June_2025") - F.col("OPEX_June_2025"))
 
-
-
-
-rec_june.agg(F.sum("Amount").alias("sum")).show()
+ebitda_june.show(truncate=False)
