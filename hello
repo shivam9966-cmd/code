@@ -1,31 +1,31 @@
 from pyspark.sql import functions as F
 
-# Ensure DATE is converted to proper date
+# Ensure DATE is a proper date
 granular_df = granular_df.withColumn("DATE", F.to_date("DATE"))
 
-# Filter June 2025
+# Filter June 2025 data
 june_2025 = granular_df.filter(
     (F.year(F.col("DATE")) == 2025) &
     (F.month(F.col("DATE")) == 6)
 )
 
-# -----------------------------
-# Revenue (L5 = "REV")
-# -----------------------------
+# Revenue (L5 = REV)
 rev_june = june_2025.filter(F.col("Account_L5") == "REV") \
-                    .agg(F.sum("Amount").alias("Revenue_June_2025"))
+                    .agg(F.sum("Amount").alias("Revenue"))
 
-# -----------------------------
-#  Operating Expenses (L5 = "OPEX")
-# -----------------------------
+# OPEX (L5 = OPEX)
 opex_june = june_2025.filter(F.col("Account_L5") == "OPEX") \
-                     .agg(F.sum("Amount").alias("OPEX_June_2025"))
+                     .agg(F.sum("Amount").alias("OPEX"))
 
-# -----------------------------
-#  COMPUTE EBITDA = REV - OPEX
-# -----------------------------
+# Compute EBITDA = Revenue - OPEX
 ebitda_june = rev_june.crossJoin(opex_june) \
-                       .withColumn("EBITDA_June_2025",
-                                   F.col("Revenue_June_2025") - F.col("OPEX_June_2025"))
+                      .withColumn("EBITDA", F.col("Revenue") - F.col("OPEX"))
 
-ebitda_june.show(truncate=False)
+# Convert to USD millions
+ebitda_june_mn = ebitda_june.select(
+    (F.col("Revenue") / 1_000_000).alias("Revenue_USD_Mn"),
+    (F.col("OPEX") / 1_000_000).alias("OPEX_USD_Mn"),
+    (F.col("EBITDA") / 1_000_000).alias("EBITDA_USD_Mn")
+)
+
+ebitda_june_mn.show(truncate=False)
