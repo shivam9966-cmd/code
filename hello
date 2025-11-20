@@ -1,31 +1,19 @@
 from pyspark.sql import functions as F
 
-# Ensure DATE is a proper date
+# Ensure DATE column is proper date
 granular_df = granular_df.withColumn("DATE", F.to_date("DATE"))
 
-# Filter June 2025 data
-june_2025 = granular_df.filter(
-    (F.year(F.col("DATE")) == 2025) &
-    (F.month(F.col("DATE")) == 6)
+# Filter FY25 + PLAN + FINAL + Recurring Revenue
+fy25_plan_final_rec_rev = granular_df.filter(
+    (F.col("YEAR") == "FY25") &
+    (F.col("SCENARIO") == "PLAN") &
+    (F.col("VERSION") == "Final") &
+    (F.col("Account_L6_Description") == "Recurring Revenue")
 )
 
-# Revenue (L5 = REV)
-rev_june = june_2025.filter(F.col("Account_L5") == "REV") \
-                    .agg(F.sum("Amount").alias("Revenue"))
-
-# OPEX (L5 = OPEX)
-opex_june = june_2025.filter(F.col("Account_L5") == "OPEX") \
-                     .agg(F.sum("Amount").alias("OPEX"))
-
-# Compute EBITDA = Revenue - OPEX
-ebitda_june = rev_june.crossJoin(opex_june) \
-                      .withColumn("EBITDA", F.col("Revenue") - F.col("OPEX"))
-
-# Convert to USD millions
-ebitda_june_mn = ebitda_june.select(
-    (F.col("Revenue") / 1_000_000).alias("Revenue_USD_Mn"),
-    (F.col("OPEX") / 1_000_000).alias("OPEX_USD_Mn"),
-    (F.col("EBITDA") / 1_000_000).alias("EBITDA_USD_Mn")
+# Sum of recurring revenue
+fy25_plan_final_rec_rev_sum = fy25_plan_final_rec_rev.agg(
+    F.sum("Amount").alias("Recurring_Revenue_SUM")
 )
 
-ebitda_june_mn.show(truncate=False)
+fy25_plan_final_rec_rev_sum.show(truncate=False)
