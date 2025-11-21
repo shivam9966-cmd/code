@@ -1,45 +1,10 @@
-usecases = {
-    "Revenue": {
-        "Recurring Revenue": [
-            {"amount": "30683M", "ending_date_of_month": "2025-06-30"},
-            {"amount": "31656M", "ending_date_of_month": "2025-07-30"},
-            {"amount": "30823M", "ending_date_of_month": "2025-08-30"},
-        ],
-        "Non-Recurring Revenue": [
-            {"amount": "6265M", "ending_date_of_month": "2025-06-30"},
-            {"amount": "2335M", "ending_date_of_month": "2025-07-30"},
-            {"amount": "2208M", "ending_date_of_month": "2025-08-30"},
-        ],
-        "Professional Services Revenue": [
-            {"amount": "3576M", "ending_date_of_month": "2025-06-30"},
-            {"amount": "3435M", "ending_date_of_month": "2025-07-30"},
-            {"amount": "3479M", "ending_date_of_month": "2025-08-30"},
-        ],
-    },
+import json
 
-    "OPEX": {
-        "Variable Expense": [
-            {"amount": "4852M", "ending_date_of_month": "2025-06-30"},
-            {"amount": "5112M", "ending_date_of_month": "2025-07-30"},
-            {"amount": "4912M", "ending_date_of_month": "2025-08-30"},
-        ],
-        "Capitalized Costs": [
-            {"amount": "-3593M", "ending_date_of_month": "2025-06-30"},
-            {"amount": "-3507M", "ending_date_of_month": "2025-07-30"},
-            {"amount": "-4425M", "ending_date_of_month": "2025-08-30"},
-        ],
-        "Compensation - Total": [
-            {"amount": "15359M", "ending_date_of_month": "2025-06-30"},
-            {"amount": "15562M", "ending_date_of_month": "2025-07-30"},
-            {"amount": "16608M", "ending_date_of_month": "2025-08-30"},
-        ],
-    },
+with open("fpna_business_summary.json", "r") as f:
+    data = json.load(f)
 
-    "EBITDA": {
-        "ebitda": [
-            {"amount": "18651M", "ending_date_of_month": "2025-06-30"},
-            {"amount": "14607M", "ending_date_of_month": "2025-07-30"},
-            {"amount": "14053M", "ending_date_of_month": "2025-08-30"},
-        ],
-    },
-}
+data
+
+
+
+print(results)
