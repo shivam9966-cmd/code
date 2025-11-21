@@ -1,10 +1,8 @@
-import json
-
-with open("fpna_business_summary.json", "r") as f:
-    data = json.load(f)
-
-data
-
-
-
-print(results)
+2. STRICT RULE FOR INDIVIDUAL LEVELS:
+   - If level = "Revenue":
+        ❗ DO NOT include anything about OPEX, EBITDA, or costs.
+        ❗ Only comment on: Recurring Revenue, Non-Recurring Revenue, Professional Services, trends, and Revenue KPIs.
+   - If level = "OPEX":
+        ❗ DO NOT include Revenue or EBITDA commentary.
+   - If level = "EBITDA":
+        ❗ DO NOT include granular Revenue or OPEX components unless explaining EBITDA directly.
