@@ -1,147 +1,45 @@
-import re
-import json
+usecases = {
+    "Revenue": {
+        "Recurring Revenue": [
+            {"amount": "30683M", "ending_date_of_month": "2025-06-30"},
+            {"amount": "31656M", "ending_date_of_month": "2025-07-30"},
+            {"amount": "30823M", "ending_date_of_month": "2025-08-30"},
+        ],
+        "Non-Recurring Revenue": [
+            {"amount": "6265M", "ending_date_of_month": "2025-06-30"},
+            {"amount": "2335M", "ending_date_of_month": "2025-07-30"},
+            {"amount": "2208M", "ending_date_of_month": "2025-08-30"},
+        ],
+        "Professional Services Revenue": [
+            {"amount": "3576M", "ending_date_of_month": "2025-06-30"},
+            {"amount": "3435M", "ending_date_of_month": "2025-07-30"},
+            {"amount": "3479M", "ending_date_of_month": "2025-08-30"},
+        ],
+    },
 
-from llama_index.llms.azure_openai import AzureOpenAI
-from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
+    "OPEX": {
+        "Variable Expense": [
+            {"amount": "4852M", "ending_date_of_month": "2025-06-30"},
+            {"amount": "5112M", "ending_date_of_month": "2025-07-30"},
+            {"amount": "4912M", "ending_date_of_month": "2025-08-30"},
+        ],
+        "Capitalized Costs": [
+            {"amount": "-3593M", "ending_date_of_month": "2025-06-30"},
+            {"amount": "-3507M", "ending_date_of_month": "2025-07-30"},
+            {"amount": "-4425M", "ending_date_of_month": "2025-08-30"},
+        ],
+        "Compensation - Total": [
+            {"amount": "15359M", "ending_date_of_month": "2025-06-30"},
+            {"amount": "15562M", "ending_date_of_month": "2025-07-30"},
+            {"amount": "16608M", "ending_date_of_month": "2025-08-30"},
+        ],
+    },
 
-
-AZURE_OPENAI_API_KEY = ""          
-AZURE_OPENAI_ENDPOINT = ""         
-AZURE_OPENAI_API_VERSION = ""      
-AZURE_OPENAI_DEPLOYMENT = ""       
-
-# Optional embedding model (only instantiated so the embedding package is used)
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT = ""  # optional; fill if you actually use embeddings
-
-llm = AzureOpenAI(
-    model=AZURE_OPENAI_DEPLOYMENT,
-    deployment_name=AZURE_OPENAI_DEPLOYMENT,
-    api_key=AZURE_OPENAI_API_KEY,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_version=AZURE_OPENAI_API_VERSION,
-)
-
-embedding_model = AzureOpenAIEmbedding(
-    model=AZURE_OPENAI_EMBEDDING_DEPLOYMENT or "text-embedding-3-large",
-    deployment_name=AZURE_OPENAI_EMBEDDING_DEPLOYMENT or "text-embedding-3-large",
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_key=AZURE_OPENAI_API_KEY,
-    api_version=AZURE_OPENAI_API_VERSION,
-)
-
-# ------------------------------------------------------------------
-# 🧩 Helper: extract JSON from model response
-# ------------------------------------------------------------------
-def extract_json_from_response(response_text: str):
-    """
-    Tries to find the first JSON object in the response text and parse it.
-    Returns a dict; in case of error, returns an error dict with raw text.
-    """
-    cleaned = response_text.strip()
-
-    # If model wrapped JSON in ```json ... ``` blocks, strip them first
-    cleaned = re.sub(r"```json", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"```", "", cleaned)
-
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-    if not match:
-        return {"error": "No JSON found in response", "raw_text": cleaned}
-
-    json_str = match.group(0)
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        return {"error": "Could not parse JSON", "raw_text": json_str}
-
-
-# ------------------------------------------------------------------
-# 🧠 Core function: analyze FP&A data and return ONE JSON summary
-#    `data` is your `usecases` dict (Revenue / OPEX / EBITDA etc.)
-# ------------------------------------------------------------------
-def analyze_fpna_summary(data: dict) -> dict:
-    """
-    Takes your aggregated FP&A 'usecases' dict and returns
-    a SINGLE JSON summary for the 'overall' level.
-    """
-    level = "overall"          # single level only
-    sub_data = data            # full usecases dict as context
-
-    sub_data_str = json.dumps(sub_data, indent=2)
-
-    prompt = f"""
-You are an FP&A and financial analytics expert.
-
-Analyse the following JSON data extracted from a granular financial dataset
-at the "{level}" level:
-
-{sub_data_str}
-
-This dataset includes Revenue, Operating Expenses, EBITDA, amounts (in USD),
-account hierarchy (L3/L4/L5/L6/L7), product hierarchy, cost center hierarchy,
-scenario, version, year, quarter and date.
-
-Your task is to generate a business summary at the "{level}" level.
-
-Follow these instructions STRICTLY:
-
-1. Focus your analysis on Revenue, Operating Expenses, and EBITDA.
-2. Identify key movements in Amount across:
-   - Scenario differences (PLAN vs F7_5)
-   - Version differences (Final vs At_Plan_Rates)
-   - Monthly or quarterly changes using the date fields
-   - Major changes at L4 (EBITDA), L5 (REV / OPEX), and deeper account levels
-3. Explicitly highlight:
-   - Revenue growth/decline drivers
-   - OPEX spikes or reductions
-   - EBITDA improvement or deterioration
-   - Any unusual one-time hits, settlements, reversals or reclassifications
-   - Any large movements caused by specific product or cost center groups
-4. Mention numeric insights where useful:
-   - Show % variance where possible
-   - Show $ variance in millions (divide Amount by 1,000,000)
-   - Use emojis to indicate movement direction:
-        🔼 for increase
-        🔽 for decrease
-        ⚠️ for risk or issue
-        📌 for important driver
-        ⭐ for positive improvement
-5. Keep bullets sharp and business-ready:
-   - Maximum 6 bullets
-   - Maximum 25 words per bullet
-   - No nested JSON
-   - Clear FP&A storytelling style like management commentary.
-6. Output must be a SINGLE JSON object with the following keys:
-
-- "level": string (e.g., "overall")
-- "executive_summary": list of bullet strings
-- "key_kpis": object with at least:
-      - "revenue_usd_mn"
-      - "opex_usd_mn"
-      - "ebitda_usd_mn"
-      - "revenue_variance_percent"
-      - "opex_variance_percent"
-      - "ebitda_variance_percent"
-- "top_drivers": list of bullet strings describing drivers at account/product/cost center level
-- "risks_and_opportunities": list of bullet strings for key risks and opportunities
-
-Return your response STRICTLY as a JSON object.
-Do NOT include any commentary outside JSON.
-"""
-
-    # --- Call Azure OpenAI via LlamaIndex ---
-    response = llm.complete(prompt)
-    response_text = getattr(response, "text", str(response))
-
-    parsed_json = extract_json_from_response(response_text)
-    return parsed_json
-
-
-
-
-results = analyze_fpna_summary(usecases)
-
-# Save as a single JSON file
-with open("fpna_business_summary.json", "w") as f:
-    json.dump(results, f, indent=2)
-
-print("JSON saved!")
+    "EBITDA": {
+        "ebitda": [
+            {"amount": "18651M", "ending_date_of_month": "2025-06-30"},
+            {"amount": "14607M", "ending_date_of_month": "2025-07-30"},
+            {"amount": "14053M", "ending_date_of_month": "2025-08-30"},
+        ],
+    },
+}
