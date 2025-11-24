@@ -1,6 +1,4 @@
-import os
+import pandas as pd
 
-for root, dirs, files in os.walk("/", topdown=True):
-    for name in files:
-        if "kpi_data_smallcase" in name.lower():
-            print(os.path.join(root, name))
+df = pd.read_csv("/Users/lc5762242/kpi_data_smallcaseols_copy.csv")
+df.head()
