@@ -1,68 +1,9 @@
-llm = AzureOpenAI(
-    model=AZURE_OPENAI_DEPLOYMENT,
-    deployment_name=AZURE_OPENAI_DEPLOYMENT,
-    api_key=AZURE_OPENAI_API_KEY,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_version=AZURE_OPENAI_API_VERSION,
-)
+results = generate_business_summary(usecases)
+
+
+print(json.dumps(results, indent=2))
 
 
 
-
-
-def generate_business_summary(usecases: dict):
-    """
-    Takes your manually created `usecases` JSON and generates
-    Revenue, OPEX and EBITDA summaries using Azure LLM via LlamaIndex.
-    """
-
-    summaries = {}
-
-    for level, sub_data in usecases.items():
-
-        # Convert inner dict to JSON string for prompt
-        sub_json = json.dumps(sub_data, indent=2)
-
-        # Build prompt
-        prompt = f"""
-You are an FP&A and financial analytics expert.
-
-Analyse the following monthly financial data for the "{level}" category:
-
-{sub_json}
-
-Follow these STRICT RULES while generating the summary:
-
-1. If level = "Revenue": DO NOT include anything about OPEX or EBITDA.
-2. If level = "OPEX": DO NOT include anything about Revenue or EBITDA.
-3. If level = "EBITDA": DO NOT include anything about Revenue or OPEX.
-
-4. Identify key trends month-over-month.
-5. Highlight increases (📈), decreases (📉), spikes (⚠️), and drop in performance (⬇️).
-6. Mention important KPIs, variance %, and drivers.
-7. Keep each bullet under 20 words.
-8. End with 3 bullets under "Risks & Opportunities".
-
-Return ONLY a valid JSON in the following format:
-
-{{
-  "level": "{level}",
-  "executive_summary": ["bullet1", "bullet2", ...],
-  "revenue_usd_m": null,
-  "opex_usd_m": null,
-  "ebitda_usd_m": null,
-  "top_drivers": ["..."],
-  "risks_and_opportunities": ["..."]
-}}
-"""
-
-        # Call Azure LLM (LlamaIndex)
-        response = llm.complete(prompt)
-        response_text = getattr(response, "text", str(response))
-
-        # Extract JSON object only
-        parsed = extract_json_from_response(response_text)
-
-        summaries[level] = parsed
-
-    return summaries
+with open("fpna_business_summary.json", "w") as f:
+    json.dump(results, f, indent=2)
