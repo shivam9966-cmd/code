@@ -1,15 +1,5 @@
-from pyspark.sql import functions as F
+unique_versions = df_2426.select("version").distinct().collect()
+unique_scenarios = df_2426.select("scenario").distinct().collect()
 
-# Add YEAR column
-granular_year = granular.withColumn("YEAR", F.year(F.col("DATE")))
-
-# Apply filter for 2024 + 2025 + 2026 (Planned only)
-df_2426 = (
-    granular_year
-    .filter(
-        (F.col("YEAR").isin(2024, 2025)) |
-        ((F.col("YEAR") == 2026) & (F.col("scenario") == "Planned"))
-    )
-)
-
-print("Filtered rows:", df_2426.count())
+print("Unique Versions:", [row.version for row in unique_versions])
+print("Unique Scenarios:", [row.scenario for row in unique_scenarios])
