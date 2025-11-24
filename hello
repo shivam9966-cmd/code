@@ -13,3 +13,4 @@ for root, dirs, files in os.walk("/", topdown=True):
     for name in files:
         if "smallcase" in name.lower():
             print(os.path.join(root, name))
+
