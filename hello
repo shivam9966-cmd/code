@@ -1,1 +1,5 @@
-df = pd.read_csv("/Downloads/kpi_data_smallcasecols_copy.csv")
+import os
+os.getcwd()
+
+
+os.listdir()
