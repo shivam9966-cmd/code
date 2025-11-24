@@ -1,4 +1,178 @@
+import os
 import json
 
-with open("business_summary.json", "w") as f:
-    json.dump(summary_json, f, indent=2)
+# ================== AZURE OPENAI CONFIG (REPLACE XXX) ==================
+AZURE_OPENAI_API_KEY   = "XXX"   # your API key
+AZURE_OPENAI_ENDPOINT  = "XXX"   # e.g., "https://your-resource.openai.azure.com/"
+AZURE_OPENAI_API_VER   = "XXX"   # e.g., "2024-10-01-preview"
+
+AZURE_LLM_DEPLOYMENT   = "XXX"   # your chat model deployment name
+AZURE_EMB_DEPLOYMENT   = "XXX"   # your embedding model deployment name
+
+
+# ================== LLAMAINDEX SETUP ==================
+from llama_index.llms.azure_openai import AzureOpenAI
+from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
+from llama_index.core import Settings
+
+llm = AzureOpenAI(
+    model=AZURE_LLM_DEPLOYMENT,
+    deployment_name=AZURE_LLM_DEPLOYMENT,
+    api_key=AZURE_OPENAI_API_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=AZURE_OPENAI_API_VER,
+    temperature=0.1,
+)
+
+embed_model = AzureOpenAIEmbedding(
+    model=AZURE_EMB_DEPLOYMENT,
+    deployment_name=AZURE_EMB_DEPLOYMENT,
+    api_key=AZURE_OPENAI_API_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=AZURE_OPENAI_API_VER,
+)
+
+Settings.llm = llm
+Settings.embed_model = embed_model
+
+
+# ================== SAFE JSON PARSER ==================
+def _parse_json_from_text(text: str) -> dict:
+    """Extracts clean JSON from LLM response."""
+    # Remove ```json fences
+    if "```" in text:
+        start = text.find("```")
+        end = text.rfind("```")
+        fenced = text[start + 3:end].strip()
+        if fenced.lower().startswith("json"):
+            fenced = fenced[4:].strip()
+        text = fenced
+
+    # Get the outermost JSON object
+    first = text.find("{")
+    last = text.rfind("}")
+    if first != -1 and last != -1 and last > first:
+        text = text[first:last + 1]
+
+    return json.loads(text)
+
+
+# ================== ROBUST LEVEL DETECTION ==================
+def _detect_level(usecases: dict) -> str:
+    """
+    Priority-based auto-detection:
+    EBITDA > OPEX > Revenue
+    Ensures correct category even if dict contains multiple fields.
+    """
+    keys = [k.lower() for k in usecases.keys()]
+
+    # Highest priority
+    if any("ebitda" in k for k in keys):
+        return "EBITDA"
+
+    # Next
+    if any("opex" in k or "operating" in k for k in keys):
+        return "OPEX"
+
+    # Lowest priority
+    if any("revenue" in k for k in keys):
+        return "Revenue"
+
+    # Default fallback
+    return "Revenue"
+
+
+# ================== MAIN FUNCTION ==================
+def generate_business_summary(usecases: dict) -> dict:
+    """Generate strict JSON FP&A summary for the detected category."""
+
+    level = _detect_level(usecases)
+
+    prompt = f"""
+You are an FP&A analytics expert.
+
+You will be given JSON data for a specific financial category at the level: "{level}".  
+The category will always be one of the following: **Revenue**, **OPEX**, or **EBITDA**.  
+Summarize ONLY the given category.  
+
+❗ STRICT RULE:  
+- If level = "Revenue": DO NOT mention OPEX or EBITDA anywhere.  
+- If level = "OPEX": DO NOT mention Revenue or EBITDA anywhere.  
+- If level = "EBITDA": DO NOT mention Revenue or OPEX anywhere.  
+
+Your task is to produce a clean JSON summary containing:
+1. **executive_summary** → 4–6 short bullet points (max 20 words each).  
+2. **usd_values** → JSON listing key USD metrics found in usecases  
+3. **variance_percent** → % change from first month to last  
+4. **top_drivers** → bullet list  
+5. **risks_and_opportunities** → bullet list  
+6. **areas_of_focus** → 2–4 tactical FP&A recommendations  
+
+Formatting rules:
+- USE emojis only for direction indicators:
+  📈 = increase  
+  📉 = decrease  
+  ⚠️ = risk  
+  ⭐ = positive highlight  
+- NO nested JSON inside fields  
+- NO text outside JSON  
+- Keep summary analytical and crisp  
+
+Return STRICTLY this structure:
+
+{{
+  "level": "{level}",
+  "executive_summary": ["...", "..."],
+  "usd_values": {{
+      "month_1": "...",
+      "month_2": "...",
+      "month_3": "..."
+  }},
+  "variance_percent": "...",
+  "top_drivers": ["...", "..."],
+  "risks_and_opportunities": ["...", "..."],
+  "areas_of_focus": ["...", "..."]
+}}
+
+Here is the JSON data:
+
+{json.dumps(usecases, indent=2)}
+
+Respond ONLY with the JSON object.
+"""
+
+    # ---- LLM call with one retry ----
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = llm.complete(prompt)
+            text = response.text
+            result = _parse_json_from_text(text)
+
+            # ensure level included
+            result["level"] = level
+            return result
+        except Exception as e:
+            last_error = e
+
+    raise last_error
+
+
+
+
+
+
+
+
+
+
+
+summary = generate_business_summary(usecases)
+summary
+
+
+
+
+
+with open("summary.json", "w") as f:
+    json.dump(summary, f, indent=2)
