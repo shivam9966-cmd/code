@@ -61,7 +61,7 @@ def _parse_json_from_text(text: str) -> dict:
 def _generate_single_level_summary(level: str, level_data: dict) -> dict:
     """
     Call LLM for ONE category (Revenue / OPEX / EBITDA)
-    using your FP&A prompt and return parsed JSON.
+    using your strict FP&A prompt and return parsed JSON.
     """
 
     prompt = f"""
@@ -78,15 +78,11 @@ Summarize ONLY the given category.
 
 Your task is to produce a clean JSON summary containing:
 1. **executive_summary** → 4–6 short bullet points (max 20 words each).  
-   - Describe trend over months  
-   - Important increases / decreases  
-   - Key drivers  
-   - ONLY for the selected category  
 2. **usd_values** → JSON listing key USD metrics extracted or calculated from JSON input  
-3. **variance_percent** → percent change from first month to last month  
-4. **top_drivers** → list of bullet points describing primary drivers for ONLY this category  
-5. **risks_and_opportunities** → bullet points listing risks & opportunities  
-6. **areas_of_focus** → 2–4 tactical recommendations  
+3. **variance_percent** → percent change from first month to last  
+4. **top_drivers** → list of bullet points  
+5. **risks_and_opportunities** → bullet list  
+6. **areas_of_focus** → 2–4 tactical FP&A recommendations  
 
 Formatting rules:
 - USE emojis only for direction indicators:
@@ -94,14 +90,14 @@ Formatting rules:
   📉 = decrease  
   ⚠️ = risk  
   ⭐ = positive highlight  
-- NO nested JSON inside fields.  
-- NO commentary outside JSON.  
-- Keep summary analytical, crisp, and FP&A-style.
+- NO nested JSON inside fields  
+- NO text outside JSON  
+- Keep summary analytical, crisp, and FP&A-style  
 
-Return the response STRICTLY in this JSON structure:
+Return STRICTLY this structure:
 
 {{
-  "level": "Revenue or OPEX or EBITDA",
+  "level": "{level}",
   "executive_summary": ["...", "..."],
   "usd_values": {{
       "month_1": "...",
@@ -114,21 +110,19 @@ Return the response STRICTLY in this JSON structure:
   "areas_of_focus": ["...", "..."]
 }}
 
-Here is the JSON data for this level:
+Here is the JSON data:
 
 {json.dumps(level_data, indent=2)}
 
-Respond ONLY with the JSON object.
+Respond ONLY with the JSON object above.
 """
 
     last_error = None
-    for attempt in range(2):  # 1st try + 1 retry
+    for attempt in range(2):  # 1 try + 1 retry
         try:
             response = llm.complete(prompt)
             text = response.text
             result = _parse_json_from_text(text)
-
-            # Ensure level field is set correctly
             result["level"] = level
             return result
         except Exception as e:
@@ -137,24 +131,23 @@ Respond ONLY with the JSON object.
     raise last_error
 
 
-# ================== MASTER FUNCTION: ALL LEVELS ==================
+# ================== MASTER FUNCTION: ALL LEVEL SUMMARIES ==================
 def generate_all_level_summaries(usecases: dict) -> dict:
     """
-    Generate summaries for Revenue, OPEX, and EBITDA (if present)
-    from the `usecases` dict.
+    Generate summaries for *all* levels: Revenue, OPEX, EBITDA,
+    assuming usecases dict is like:
 
-    Expected structure (like your screenshot):
     {
         "Revenue": { ... },
-        "OPEX":    { ... },
-        "EBITDA":  { ... }
+        "OPEX": { ... },
+        "EBITDA": { ... }
     }
 
-    Returns:
+    Returns a dict:
     {
-        "Revenue": { ...summary json... },
-        "OPEX":    { ...summary json... },
-        "EBITDA":  { ...summary json... }
+        "Revenue": {summary_json},
+        "OPEX": {summary_json},
+        "EBITDA": {summary_json}
     }
     """
 
@@ -174,22 +167,17 @@ def generate_all_level_summaries(usecases: dict) -> dict:
 
 
 
-# usecases = { "Revenue": {...}, "OPEX": {...}, "EBITDA": {...} }
+summaries = generate_all_level_summaries(usecases)
+summaries
 
-all_summaries = generate_all_level_summaries(usecases)
-all_summaries
+
 
 
 
 
 import json
 
-with open("summary_revenue.json", "w") as f:
-    json.dump(all_summaries.get("Revenue", {}), f, indent=2)
-
-with open("summary_opex.json", "w") as f:
-    json.dump(all_summaries.get("OPEX", {}), f, indent=2)
-
-with open("summary_ebitda.json", "w") as f:
-    json.dump(all_summaries.get("EBITDA", {}), f, indent=2)
+for level, summary in summaries.items():
+    with open(f"summary_{level.lower()}.json", "w") as f:
+        json.dump(summary, f, indent=2)
 
