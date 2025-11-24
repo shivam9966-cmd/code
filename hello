@@ -1,4 +1,117 @@
-❗ STRICT RULE:  
-- If level = "Revenue": DO NOT mention OPEX or EBITDA anywhere.  
-- If level = "OPEX": DO NOT mention Revenue or EBITDA anywhere.  
-- If level = "EBITDA": DO NOT mention Revenue or OPEX anywhere
+import json
+
+def generate_fpna_summary(
+    usecases: dict,
+    level: str,
+    save_path: str | None = None,
+) -> dict:
+    """
+    usecases : dict with keys like 'Revenue', 'OPEX', 'EBITDA'
+    level    : which section to summarize ('Revenue' / 'OPEX' / 'EBITDA' / etc.)
+    save_path: optional path to save the LLM JSON output (e.g. 'fpna_business_summary.json')
+    """
+    # 1. Pick the right slice of the usecases dict
+    if level not in usecases:
+        raise ValueError(f"Level '{level}' not found in usecases. Available: {list(usecases.keys())}")
+    
+    sub_data = usecases[level]
+    sub_data_str = json.dumps(sub_data, indent=2)
+
+    strict_rule = _strict_rule_for_level(level)
+
+    # 2. Build generalized prompt
+    prompt = f"""
+You are an FP&A and financial analytics expert.
+
+Analyse the following JSON data extracted from a granular financial dataset
+at the "{level}" level:
+
+{sub_data_str}
+
+This dataset includes amounts in USD (typically in millions), for three recent months,
+with categories such as Recurring Revenue, Non-Recurring Revenue, Professional Services
+Revenue, Variable Expense, Capitalized Costs, Compensation, etc. depending on the level.
+
+Your task is to generate a business summary at the "{level}" level.
+
+Follow these instructions STRICTLY:
+
+1. Focus ONLY on the "{level}" metrics present in the JSON.
+2. Identify key movements over time (month-on-month changes).
+3. Comment on trends in both absolute value (USD) and percentage change where meaningful.
+4. Mention 2–5 key KPIs for this level (e.g. revenue_usd_m, opex_usd_m, ebitda_usd_m, variance_percent).
+5. Provide short, crisp, decision-oriented sentences, suitable for an FP&A dashboard.
+6. Use simple business language (no technical ML jargon).
+7. STRICT RULE:
+   - {strict_rule}
+
+Return your response STRICTLY as a JSON object in the following shape:
+
+{{
+  "level": "{level}",
+  "executive_summary": [
+    "sentence 1...",
+    "sentence 2...",
+    "sentence 3..."
+  ],
+  "key_kpis": {{
+    "kpi_list": [
+      {{
+        "name": "KPI name",
+        "current_value_usd_m": <number>,
+        "change_vs_prev_usd_m": <number>,
+        "change_vs_prev_percent": <number>
+      }}
+    ]
+  }},
+  "top_drivers": [
+    "bullet describing key driver 1...",
+    "bullet describing key driver 2..."
+  ],
+  "risks_and_opportunities": [
+    "bullet describing key risk or opportunity 1...",
+    "bullet describing key risk or opportunity 2..."
+  ]
+}}
+
+Do NOT include any commentary or text outside of this JSON object.
+"""
+
+    # 3. Call Azure OpenAI via LlamaIndex
+    response = llm.complete(prompt)
+    response_text = getattr(response, "text", str(response))
+
+    # 4. Extract clean JSON from model output
+    parsed_json = extract_json_from_response(response_text)
+
+    # 5. Optionally save to file
+    if save_path is not None:
+        with open(save_path, "w") as f:
+            json.dump(parsed_json, f, indent=2)
+        print(f"JSON summary saved to: {save_path}")
+
+    # 6. Return JSON dict for further use / frontend
+    return parsed_json
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# EBITDA summary
+ebitda_summary = generate_fpna_summary(usecases, level="EBITDA", save_path="ebitda_summary.json")
+
+# Revenue summary
+rev_summary = generate_fpna_summary(usecases, level="Revenue", save_path="revenue_summary.json")
+
+# OPEX summary
+opex_summary = generate_fpna_summary(usecases, level="OPEX", save_path="opex_summary.json")
