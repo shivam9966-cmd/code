@@ -1,3 +1,19 @@
+from pyspark.sql import functions as F
+
+granular_year = granular.withColumn("YEAR", F.year("DATE"))
+
+df_2426 = (
+    granular_year
+    .filter(
+        (F.col("YEAR").isin(2024, 2025)) |
+        ((F.col("YEAR") == 2026) & (F.col("scenario")=="Planned"))
+    )
+)
+
+
+
+
+
 tmp_path = "/lakehouse/default/Files/tmp_2426_csv"
 
 df_2426.write.mode("overwrite").option("header", True).csv(tmp_path)
