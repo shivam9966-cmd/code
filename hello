@@ -1,17 +1,36 @@
-# Convert Spark to Pandas (be careful with size)
-pdf = df_2426.toPandas()
+tmp_path = "/lakehouse/default/Files/tmp_2426_csv"
 
+df_2426.write.mode("overwrite").option("header", True).csv(tmp_path)
+
+
+
+
+
+
+
+
+import glob
+
+tmp_path = "/lakehouse/default/Files/tmp_2426_csv"
 output_path = "/lakehouse/default/Files/filtered_2024_2026_dump.sql"
 
-with open(output_path, "w", encoding="utf-8") as f:
-    for _, row in pdf.iterrows():
-        cols = ", ".join(pdf.columns)
-        vals = []
-        for v in row.values:
-            # Escape single quotes
-            v = str(v).replace("'", "''")
-            vals.append(f"'{v}'")
-        vals = ", ".join(vals)
-        f.write(f"INSERT INTO your_table_name ({cols}) VALUES ({vals});\n")
+csv_files = glob.glob(tmp_path + "/*.csv")
 
-print("SQL dump written to:", output_path)
+with open(output_path, "w", encoding="utf-8") as out:
+    for file in csv_files:
+        with open(file, "r", encoding="utf-8") as f:
+            header = f.readline().strip().split(",")  # column names
+            for line in f:
+                values = line.strip().split(",")
+                escaped = ["'" + v.replace("'", "''") + "'" for v in values]
+                out.write(
+                    f"INSERT INTO your_table_name ({','.join(header)}) "
+                    f"VALUES ({','.join(escaped)});\n"
+                )
+
+print("Final SQL dump written to:", output_path)
+
+
+
+
+
