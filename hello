@@ -1,5 +1,6 @@
 import os
-os.getcwd()
 
-
-os.listdir()
+for root, dirs, files in os.walk("/", topdown=True):
+    for name in files:
+        if "kpi_data_smallcase" in name.lower():
+            print(os.path.join(root, name))
