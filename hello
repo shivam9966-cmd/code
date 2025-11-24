@@ -1,5 +1,17 @@
-unique_versions = df_2426.select("version").distinct().collect()
-unique_scenarios = df_2426.select("scenario").distinct().collect()
+# Convert Spark to Pandas (be careful with size)
+pdf = df_2426.toPandas()
 
-print("Unique Versions:", [row.version for row in unique_versions])
-print("Unique Scenarios:", [row.scenario for row in unique_scenarios])
+output_path = "/lakehouse/default/Files/filtered_2024_2026_dump.sql"
+
+with open(output_path, "w", encoding="utf-8") as f:
+    for _, row in pdf.iterrows():
+        cols = ", ".join(pdf.columns)
+        vals = []
+        for v in row.values:
+            # Escape single quotes
+            v = str(v).replace("'", "''")
+            vals.append(f"'{v}'")
+        vals = ", ".join(vals)
+        f.write(f"INSERT INTO your_table_name ({cols}) VALUES ({vals});\n")
+
+print("SQL dump written to:", output_path)
