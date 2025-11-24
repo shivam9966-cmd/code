@@ -1,25 +1,6 @@
-from pyspark.sql import functions as F
+tmp_path = "/lakehouse/default/Files/tmp_filtered_parquet"
 
-granular_year = granular.withColumn("YEAR", F.year("DATE"))
-
-df_2426 = (
-    granular_year
-    .filter(
-        (F.col("YEAR").isin(2024, 2025)) |
-        ((F.col("YEAR") == 2026) & (F.col("scenario")=="Planned"))
-    )
-)
-
-
-
-
-
-tmp_path = "/lakehouse/default/Files/tmp_2426_csv"
-
-df_2426.write.mode("overwrite").option("header", True).csv(tmp_path)
-
-
-
+df_filtered.write.mode("overwrite").parquet(tmp_path)
 
 
 
@@ -27,26 +8,25 @@ df_2426.write.mode("overwrite").option("header", True).csv(tmp_path)
 
 import glob
 
-tmp_path = "/lakehouse/default/Files/tmp_2426_csv"
-output_path = "/lakehouse/default/Files/filtered_2024_2026_dump.sql"
-
-csv_files = glob.glob(tmp_path + "/*.csv")
+parquet_files = glob.glob(tmp_path + "/*.parquet")
+output_path = "/lakehouse/default/Files/filtered_dump.sql"
 
 with open(output_path, "w", encoding="utf-8") as out:
-    for file in csv_files:
-        with open(file, "r", encoding="utf-8") as f:
-            header = f.readline().strip().split(",")  # column names
-            for line in f:
-                values = line.strip().split(",")
-                escaped = ["'" + v.replace("'", "''") + "'" for v in values]
-                out.write(
-                    f"INSERT INTO your_table_name ({','.join(header)}) "
-                    f"VALUES ({','.join(escaped)});\n"
-                )
 
-print("Final SQL dump written to:", output_path)
+    for pf in parquet_files:
+        df_part = spark.read.parquet(pf)
 
+        cols = df_part.columns
+        cols_sql = ",".join(cols)
 
+        for row in df_part.collect():
+            vals = []
+            for v in row:
+                v = "" if v is None else str(v).replace("'", "''")
+                vals.append(f"'{v}'")
 
+            out.write(
+                f"INSERT INTO random_table ({cols_sql}) VALUES ({','.join(vals)});\n"
+            )
 
-
+print("SQL dump created:", output_path)
