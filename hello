@@ -1,16 +1,15 @@
-import os
-os.getcwd()
+from pyspark.sql import functions as F
 
+# Add YEAR column
+granular_year = granular.withColumn("YEAR", F.year(F.col("DATE")))
 
-os.listdir()
+# Apply filter for 2024 + 2025 + 2026 (Planned only)
+df_2426 = (
+    granular_year
+    .filter(
+        (F.col("YEAR").isin(2024, 2025)) |
+        ((F.col("YEAR") == 2026) & (F.col("scenario") == "Planned"))
+    )
+)
 
-
-
-
-import os
-
-for root, dirs, files in os.walk("/", topdown=True):
-    for name in files:
-        if "smallcase" in name.lower():
-            print(os.path.join(root, name))
-
+print("Filtered rows:", df_2426.count())
