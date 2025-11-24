@@ -1,2 +1,15 @@
-df = pd.read_csv("/Users/lc5762242/Downloads/kpi_data_smallcaseols_copy.csv")
-df.head()
+import os
+os.getcwd()
+
+
+os.listdir()
+
+
+
+
+import os
+
+for root, dirs, files in os.walk("/", topdown=True):
+    for name in files:
+        if "smallcase" in name.lower():
+            print(os.path.join(root, name))
