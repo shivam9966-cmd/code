@@ -1,33 +1,27 @@
-from mssparkutils.fs import exists, rm
+from py4j.java_gateway import java_import
+
+# Import Java classes
+java_import(spark._jvm, 'org.apache.hadoop.fs.FileSystem')
+java_import(spark._jvm, 'org.apache.hadoop.fs.Path')
+
+# Hadoop filesystem handle
+fs = spark._jvm.FileSystem.get(spark._jsc.hadoopConfiguration())
 
 output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single"
 
-# Delete only if folder exists
-if exists(output_path):
-    rm(output_path, recurse=True)
+# Delete output folder if it exists
+if fs.exists(spark._jvm.Path(output_path)):
+    fs.delete(spark._jvm.Path(output_path), True)
 
-
-df_single.write.mode("overwrite").option("header", True).csv(output_path)
-
-
-
-# 1. Read your multipart folder
+# 1. Read multi-part CSV folder
 df = (
     spark.read
     .option("header", True)
     .csv("Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset/*")
 )
 
-# 2. Merge into 1 CSV
+# 2. Merge into one file
 df_single = df.coalesce(1)
 
-# 3. Safe delete (won’t throw error if folder doesn’t exist)
-from mssparkutils.fs import exists, rm
-
-output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single"
-
-if exists(output_path):
-    rm(output_path, recurse=True)
-
-# 4. Write as single CSV
+# 3. Write to single CSV
 df_single.write.mode("overwrite").option("header", True).csv(output_path)
