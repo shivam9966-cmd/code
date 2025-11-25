@@ -1,27 +1,7 @@
-from py4j.java_gateway import java_import
-
-# Import Java classes
-java_import(spark._jvm, 'org.apache.hadoop.fs.FileSystem')
-java_import(spark._jvm, 'org.apache.hadoop.fs.Path')
-
-# Hadoop filesystem handle
-fs = spark._jvm.FileSystem.get(spark._jsc.hadoopConfiguration())
-
-output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single"
-
-# Delete output folder if it exists
-if fs.exists(spark._jvm.Path(output_path)):
-    fs.delete(spark._jvm.Path(output_path), True)
-
-# 1. Read multi-part CSV folder
-df = (
+df_single = (
     spark.read
     .option("header", True)
-    .csv("Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset/*")
+    .csv("Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single/*")
 )
 
-# 2. Merge into one file
-df_single = df.coalesce(1)
-
-# 3. Write to single CSV
-df_single.write.mode("overwrite").option("header", True).csv(output_path)
+df_single.count()
