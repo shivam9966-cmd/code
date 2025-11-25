@@ -1,10 +1,14 @@
-# Load your existing granular subset
-df = spark.read.csv("/lakehouse/default/Files/granular_subset", header=True, inferSchema=True)
+# Read the granular subset (all part files)
+df = (
+    spark.read
+    .option("header", True)
+    .csv("/lakehouse/default/Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset/*")
+)
 
-# Force Spark to combine everything into one partition
+# Combine into one partition
 df_single = df.coalesce(1)
 
-# Write as ONE CSV file
-output_path = "/lakehouse/default/Files/granular_subset_single"
+# Write as a single CSV file
+output_path = "/lakehouse/default/Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single"
 
 df_single.write.mode("overwrite").option("header", True).csv(output_path)
