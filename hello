@@ -1,6 +1,23 @@
-tmp_path = "/lakehouse/default/Files/tmp_filtered_parquet"
+from pyspark.sql import functions as F
+
+df_filtered = (
+    granular
+    .withColumn("YEAR", F.year("DATE"))
+    .filter(
+        (F.col("YEAR").isin(2024, 2025)) |
+        ((F.col("YEAR") == 2026) & (F.col("scenario") == "Planned"))
+    )
+)
+
+
+
+
+tmp_path = "/lakehouse/default/Tables/tmp_filtered_parquet"
 
 df_filtered.write.mode("overwrite").parquet(tmp_path)
+
+
+
 
 
 
@@ -26,7 +43,8 @@ with open(output_path, "w", encoding="utf-8") as out:
                 vals.append(f"'{v}'")
 
             out.write(
-                f"INSERT INTO random_table ({cols_sql}) VALUES ({','.join(vals)});\n"
+                f"INSERT INTO random_table ({cols_sql}) "
+                f"VALUES ({','.join(vals)});\n"
             )
 
 print("SQL dump created:", output_path)
