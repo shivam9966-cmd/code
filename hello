@@ -1,21 +1,44 @@
-from pyspark.sql import functions as F
+rename_map = {
+    "ACCOUNT": "account",
+    "COSTCENTER": "costcenter",
+    "CURRENCY": "currency",
+    "CUSTOMER": "customer",
+    "DATASOURCE": "datasource",
+    "ENTITY": "entity",
+    "ICP": "icp",
+    "LOCATION": "location",
+    "PRODUCTLINE": "productline",
+    "SCENARIO": "scenario",
+    "VERSION": "version",
+    "VIEW": "view",
+    "PERIOD": "period",
+    "Amount": "amount",
+    "QUARTER": "quarter",
+    "COSTCENTER_PRODUCTLINE": "costcenter_productline",
+    "CC_PR_AC": "cc_pr_ac",
+    "Account_Code": "account_code",
+    "Account_L4": "account_L4",
+    "account_L5_Description": "account_L5_Description",
+    "Product_Line": "product_line",
+    "product_L3_Description": "product_L3_Description",
+    "Cost_Center_Code": "cost_center_code",
+    "Cost_Center_L3_Description": "cost_center_L3_Description",
+    "KPI": "kpi",
+    "FACT_SOURCE": "fact_source",
+    # DO NOT CHANGE these 3:
+    # "date": "date",
+    # "actual_months": "actual_months",
+    # "forecasted_months": "forecasted_months"
+}
 
-df_clean = df_filtered
+
+
+
+
+df_final = df_clean
 
 for old, new in rename_map.items():
-    if old in df_clean.columns:
-        df_clean = df_clean.withColumnRenamed(old, new)
+    if old in df_final.columns: 
+        df_final = df_final.withColumnRenamed(old, new)
 
-# Ensure date becomes actual date type
-df_clean = df_clean.withColumn("date", F.to_date("date"))
-
-# Ensure nulls replaced for actual & forecasted
-df_clean = df_clean.withColumn(
-    "actual_months", F.coalesce("actual_months", F.lit(0))
-)
-
-df_clean = df_clean.withColumn(
-    "forecasted_months", F.coalesce("forecasted_months", F.lit(0))
-)
-
-df_clean.show(20)
+df_final.show(20)
