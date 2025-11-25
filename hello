@@ -12,12 +12,9 @@ df_filtered = (
 
 
 
-tmp_path = "/lakehouse/default/Tables/tmp_filtered_parquet"
+tmp_path = "Files/tmp_filtered_csv"
 
-df_filtered.write.mode("overwrite").parquet(tmp_path)
-
-
-
+df_filtered.write.mode("overwrite").option("header", True).csv(tmp_path)
 
 
 
@@ -25,26 +22,22 @@ df_filtered.write.mode("overwrite").parquet(tmp_path)
 
 import glob
 
-parquet_files = glob.glob(tmp_path + "/*.parquet")
+csv_files = glob.glob("/lakehouse/default/Files/tmp_filtered_csv/*.csv")
 output_path = "/lakehouse/default/Files/filtered_dump.sql"
 
 with open(output_path, "w", encoding="utf-8") as out:
+    for file in csv_files:
+        with open(file, "r", encoding="utf-8") as f:
+            header = f.readline().strip().split(",")
+            cols = ",".join(header)
 
-    for pf in parquet_files:
-        df_part = spark.read.parquet(pf)
+            for line in f:
+                values = line.strip().split(",")
+                escaped = ["'" + v.replace("'", "''") + "'" for v in values]
+                
+                out.write(
+                    f"INSERT INTO random_table ({cols}) "
+                    f"VALUES ({','.join(escaped)});\n"
+                )
 
-        cols = df_part.columns
-        cols_sql = ",".join(cols)
-
-        for row in df_part.collect():
-            vals = []
-            for v in row:
-                v = "" if v is None else str(v).replace("'", "''")
-                vals.append(f"'{v}'")
-
-            out.write(
-                f"INSERT INTO random_table ({cols_sql}) "
-                f"VALUES ({','.join(vals)});\n"
-            )
-
-print("SQL dump created:", output_path)
+print("SQL dump saved to:", output_path)
