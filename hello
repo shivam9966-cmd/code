@@ -1,10 +1,10 @@
-from notebookutils import mssparkutils
+# Load your existing granular subset
+df = spark.read.csv("/lakehouse/default/Files/granular_subset", header=True, inferSchema=True)
 
-print("Root:")
-print(mssparkutils.fs.ls("/"))
+# Force Spark to combine everything into one partition
+df_single = df.coalesce(1)
 
-print("Lakehouse:")
-print(mssparkutils.fs.ls("lakehouse"))
+# Write as ONE CSV file
+output_path = "/lakehouse/default/Files/granular_subset_single"
 
-print("Default Lakehouse Files:")
-print(mssparkutils.fs.ls("lakehouse/default/Files"))
+df_single.write.mode("overwrite").option("header", True).csv(output_path)
