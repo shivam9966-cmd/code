@@ -1,47 +1,63 @@
+rename_map = {
+    "ACCOUNT": "account",
+    "COSTCENTER": "costcenter",
+    "CURRENCY": "currency",
+    "CUSTOMER": "customer",
+    "DATASOURCE": "datasource",
+    "ENTITY": "entity",
+    "ICP": "icp",
+    "LOCATION": "location",
+    "PRODUCTLINE": "productline",
+    "SCENARIO": "scenario",
+    "VERSION": "version",
+    "VIEW": "view",
+    "YEAR": "year",
+    "PERIOD": "period",
+    "Amount": "amount",
+    "DATE": "date",
+    "QUARTER": "quarter",
+    "COSTCENTER_PRODUCTLINE": "costcenter_productline",
+    "CC_PR_AC": "cc_pr_ac",
+    "Account_Code": "account_code",
+    "Account_L4": "account_L4",
+    "Account_L5_Description": "account_L5_Description",
+    "Product_Line": "product_line",
+    "Product_L3_Description": "product_L3_Description",
+    "Cost_Center_Code": "cost_center_code",
+    "Cost_Center_L3_Description": "cost_center_L3_Description",
+    "KPI": "kpi",
+    "FACT_SOURCE": "fact_source",
+    "Actual": "actual_months",
+    "Forecasted": "forecasted_months"
+}
+
+
+
+
+
+
+
+df_final = df_filtered
+
+for old, new in rename_map.items():
+    if old in df_final.columns:
+        df_final = df_final.withColumnRenamed(old, new)
+
+
+
+
+
+
 from pyspark.sql import functions as F
 
-# mapping: source column in df_clean  →  final name you want
-col_map = [
-    ("Product_L3_Description",   "product_L3_Description"),
-    ("Product_L4_Description",   "product_L4_Description"),
-    ("Product_L5_Description",   "product_L5_Description"),
-    ("Product_L6_Description",   "product_L6_Description"),
-    ("Product_L7_Description",   "product_L7_Description"),
-    ("Product_L8_Description",   "product_L8_Description"),
+df_final = df_final.withColumn("date", F.to_date("date"))
 
-    ("account_L5_Description",   "account_L5_Description"),
-    ("account_L6_Description",   "account_L6_Description"),
-    ("account_L7_Description",   "account_L7_Description"),
+df_final = df_final.withColumn(
+    "actual_months",
+    F.coalesce("actual_months", F.lit(0))
+)
 
-    ("CC_L1_Description",        "CC_L1_Description"),
-    ("CC_L2_Description",        "CC_L2_Description"),
-    ("CC_L3_Description",        "CC_L3_Description"),
-    ("CC_L4_Description",        "CC_L4_Description"),
-
-    ("ACCOUNT",                  "account"),
-    ("COSTCENTER",               "costcenter"),
-    ("PRODUCTLINE",              "productline"),
-    ("SCENARIO",                 "scenario"),
-
-    ("actual_months",            "actual_months"),
-    ("forecasted_months",        "forecasted_months"),
-
-    ("VERSION",                  "version"),
-    ("Amount",                   "amount"),
-    ("YEAR",                     "year"),
-    ("QUARTER",                  "quarter")
-]
-
-# build the select list in the exact Excel order,
-# only for columns that actually exist in df_clean
-select_exprs = []
-for src, tgt in col_map:
-    if src in df_clean.columns:
-        if src == tgt:
-            select_exprs.append(F.col(src))
-        else:
-            select_exprs.append(F.col(src).alias(tgt))
-
-df_final = df_clean.select(select_exprs)
-
-df_final.columns
+df_final = df_final.withColumn(
+    "forecasted_months",
+    F.coalesce("forecasted_months", F.lit(0))
+)
