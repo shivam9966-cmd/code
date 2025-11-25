@@ -1,89 +1,15 @@
-
 from pyspark.sql import functions as F
 
-# --------------------------------------------------------
-# 1. RENAME FACT COLUMNS TO LOWERCASE
-# --------------------------------------------------------
+# Extract numeric year from strings like "FY24"
+df_year = df.withColumn("YEAR_NUM", F.regexp_extract(F.col("YEAR"), r"(\d+)", 1).cast("int"))
 
-rename_map = {
-    "ACCOUNT": "account",
-    "COSTCENTER": "costcenter",
-    "PRODUCTLINE": "productline",
-    "SCENARIO": "scenario",
-    "VERSION": "version",
-    "AMOUNT": "amount",
-    "YEAR": "year",
-    "QUARTER": "quarter",
-    "DATE": "date"
-}
-
-for old, new in rename_map.items():
-    if old in df_2426.columns:
-        df_2426 = df_2426.withColumnRenamed(old, new)
-
-# --------------------------------------------------------
-# 2. CREATE actual_months & forecasted_months FROM SCENARIO
-# --------------------------------------------------------
-
+# Filter 2024, 2025, and 2026 (planned only)
 df_2426 = (
-    df_2426
-    .withColumn(
-        "actual_months",
-        F.regexp_extract("scenario", r"F(\d+)_", 1).cast("int")
-    )
-    .withColumn(
-        "forecasted_months",
-        F.regexp_extract("scenario", r"_(\d+)$", 1).cast("int")
+    df_year.filter(
+        (F.col("YEAR_NUM").isin(24, 25)) | 
+        ((F.col("YEAR_NUM") == 26) & (F.col("SCENARIO") == "PLAN"))
     )
 )
 
-# Fill NULLs with 0
-df_2426 = df_2426.fillna({
-    "actual_months": 0,
-    "forecasted_months": 0
-})
-
-# --------------------------------------------------------
-# 3. KEEP ONLY THE FINAL 23 COLUMNS IN EXACT ORDER
-# --------------------------------------------------------
-
-final_cols = [
-    "product_L3_Description",
-    "product_L4_Description",
-    "product_L5_Description",
-    "product_L6_Description",
-    "product_L7_Description",
-    "product_L8_Description",
-
-    "account_L5_Description",
-    "account_L6_Description",
-    "account_L7_Description",
-
-    "CC_L1_Description",
-    "CC_L2_Description",
-    "CC_L3_Description",
-    "CC_L4_Description",
-
-    "account",
-    "costcenter",
-    "productline",
-    "scenario",
-    "actual_months",
-    "forecasted_months",
-    "version",
-    "amount",
-    "year",
-    "quarter",
-    "date"
-]
-
-df_final = df_2426.select(*final_cols)
-
-# --------------------------------------------------------
-# 4. SHOW FINAL RESULTS
-# --------------------------------------------------------
-
-df_final.show(10)
-print("Columns:", df_final.columns)
-print("Row count:", df_final.count())
-
+print("Filtered rows:", df_2426.count())
+df_2426.select("YEAR", "YEAR_NUM", "SCENARIO").distinct().orderBy("YEAR_NUM").show()
