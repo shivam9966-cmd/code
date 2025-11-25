@@ -1,3 +1,28 @@
+import pandas as pd
+
+# 1) Read your new file
+df = pd.read_csv("granular_subset_single.csv")
+
+# 👉 CHANGE THIS to the exact date column name in your file
+# e.g. "DATE", "posting_date", "ending_date_of_month", etc.
+DATE_COL   = "DATE"          # <-- put your real date column name here
+AMOUNT_COL = "AMOUNT"        # adjust if your amount column is named differently
+BUCKET_COL = "account_L5_Description"   # column that has "Revenue" / "Operating Expenses"
+
+# 2) Convert date column to datetime
+df[DATE_COL] = pd.to_datetime(df[DATE_COL])
+
+# 3) Choose which months you want (2025 Jun, Jul, Aug by default)
+TARGET_YEAR   = 2025
+TARGET_MONTHS = [6, 7, 8]    # change to [6, 7, 9] if you truly want Sep instead of Aug
+
+# Filter to those months in that year
+df_filtered = df[
+    (df[DATE_COL].dt.year == TARGET_YEAR) &
+    (df[DATE_COL].dt.month.isin(TARGET_MONTHS))
+].copy()
+
+df_filtered.head()
 df_single = (
     spark.read
     .option("header", True)
