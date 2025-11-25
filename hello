@@ -1,32 +1,69 @@
-import pandas as pd
+rename_map = {
+    # Product descriptions
+    "Product_L3_Description": "product_L3_Description",
+    "Product_L4_Description": "product_L4_Description",
+    "Product_L5_Description": "product_L5_Description",
+    "Product_L6_Description": "product_L6_Description",
+    "Product_L7_Description": "product_L7_Description",
+    "Product_L8_Description": "product_L8_Description",
 
-# 1) Read your new file
-df = pd.read_csv("granular_subset_single.csv")
+    # Account descriptions
+    "Account_L5_Description": "account_L5_Description",
+    "Account_L6_Description": "account_L6_Description",
+    "Account_L7_Description": "account_L7_Description",
 
-# 👉 CHANGE THIS to the exact date column name in your file
-# e.g. "DATE", "posting_date", "ending_date_of_month", etc.
-DATE_COL   = "DATE"          # <-- put your real date column name here
-AMOUNT_COL = "AMOUNT"        # adjust if your amount column is named differently
-BUCKET_COL = "account_L5_Description"   # column that has "Revenue" / "Operating Expenses"
+    # Cost center descriptions
+    "CC_L1_Description": "CC_L1_Description",
+    "CC_L2_Description": "CC_L2_Description",
+    "CC_L3_Description": "CC_L3_Description",
+    "CC_L4_Description": "CC_L4_Description",
 
-# 2) Convert date column to datetime
-df[DATE_COL] = pd.to_datetime(df[DATE_COL])
+    # Direct pass-through columns
+    "account": "account",
+    "costcenter": "costcenter",
+    "productline": "productline",
+    "scenario": "scenario",
 
-# 3) Choose which months you want (2025 Jun, Jul, Aug by default)
-TARGET_YEAR   = 2025
-TARGET_MONTHS = [6, 7, 8]    # change to [6, 7, 9] if you truly want Sep instead of Aug
+    # Fix these per Excel
+    "Actual": "actual_months",
+    "Forecasted": "forecasted_months",
 
-# Filter to those months in that year
-df_filtered = df[
-    (df[DATE_COL].dt.year == TARGET_YEAR) &
-    (df[DATE_COL].dt.month.isin(TARGET_MONTHS))
-].copy()
+    "version": "version",
+    "amount": "amount",
+    "year": "year",
+    "quarter": "quarter",
 
-df_filtered.head()
-df_single = (
-    spark.read
-    .option("header", True)
-    .csv("Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single/*")
+    
+    "DATE": "date"
+}
+
+
+
+
+
+
+
+from pyspark.sql import functions as F
+
+df_clean = df_filtered
+
+# Apply renames
+for old, new in rename_map.items():
+    if old in df_clean.columns:
+        df_clean = df_clean.withColumnRenamed(old, new)
+
+# Convert date to actual date type
+df_clean = df_clean.withColumn("date", F.to_date("date"))
+
+# Replace nulls
+df_clean = df_clean.withColumn(
+    "actual_months", F.coalesce(F.col("actual_months"), F.lit(0))
 )
 
-df_single.count()
+df_clean = df_clean.withColumn(
+    "forecasted_months", F.coalesce(F.col("forecasted_months"), F.lit(0))
+)
+
+df_clean.show(50)
+
+
