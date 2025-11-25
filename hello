@@ -1,3 +1,4 @@
+
 from pyspark.sql import functions as F
 
 # --------------------------------------------------------
@@ -17,15 +18,15 @@ rename_map = {
 }
 
 for old, new in rename_map.items():
-    if old in df_filtered.columns:
-        df_filtered = df_filtered.withColumnRenamed(old, new)
+    if old in df_2426.columns:
+        df_2426 = df_2426.withColumnRenamed(old, new)
 
 # --------------------------------------------------------
 # 2. CREATE actual_months & forecasted_months FROM SCENARIO
 # --------------------------------------------------------
 
-df_filtered = (
-    df_filtered
+df_2426 = (
+    df_2426
     .withColumn(
         "actual_months",
         F.regexp_extract("scenario", r"F(\d+)_", 1).cast("int")
@@ -36,14 +37,14 @@ df_filtered = (
     )
 )
 
-# Fill NULLs with zero
-df_filtered = df_filtered.fillna({
+# Fill NULLs with 0
+df_2426 = df_2426.fillna({
     "actual_months": 0,
     "forecasted_months": 0
 })
 
 # --------------------------------------------------------
-# 3. KEEP ONLY THE FINAL 23 COLUMNS
+# 3. KEEP ONLY THE FINAL 23 COLUMNS IN EXACT ORDER
 # --------------------------------------------------------
 
 final_cols = [
@@ -76,9 +77,13 @@ final_cols = [
     "date"
 ]
 
-df_final = df_filtered.select(*final_cols)
+df_final = df_2426.select(*final_cols)
 
-# Show result
-df_final.show(5)
+# --------------------------------------------------------
+# 4. SHOW FINAL RESULTS
+# --------------------------------------------------------
+
+df_final.show(10)
 print("Columns:", df_final.columns)
 print("Row count:", df_final.count())
+
