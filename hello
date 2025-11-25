@@ -1,5 +1,3 @@
-display(dbutils.fs.ls("lakehouse/default/Files"))
+from notebookutils import mssparkutils
 
-
-
-display(dbutils.fs.ls("lakehouse/<your-lakehouse-name>/Files"))
+mssparkutils.fs.ls("Files")
