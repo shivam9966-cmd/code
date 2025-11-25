@@ -1,20 +1,33 @@
-# Read all part files
+from mssparkutils.fs import exists, rm
+
+output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single"
+
+# Delete only if folder exists
+if exists(output_path):
+    rm(output_path, recurse=True)
+
+
+df_single.write.mode("overwrite").option("header", True).csv(output_path)
+
+
+
+# 1. Read your multipart folder
 df = (
     spark.read
     .option("header", True)
     .csv("Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset/*")
 )
 
-# Combine into single partition
+# 2. Merge into 1 CSV
 df_single = df.coalesce(1)
 
-# Delete output folder if it exists (Fabric version)
-mssparkutils.fs.rm(
-    "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single",
-    recurse=True
-)
+# 3. Safe delete (won’t throw error if folder doesn’t exist)
+from mssparkutils.fs import exists, rm
 
-# Write as a single CSV
-df_single.write.mode("overwrite").option("header", True).csv(
-    "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single"
-)
+output_path = "Files/SQL_DUMPS/FINAL_EXPORTS/Run_2025-11-10_09-11-55/granular_subset_single"
+
+if exists(output_path):
+    rm(output_path, recurse=True)
+
+# 4. Write as single CSV
+df_single.write.mode("overwrite").option("header", True).csv(output_path)
