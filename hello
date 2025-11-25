@@ -1,63 +1,81 @@
-rename_map = {
-    "ACCOUNT": "account",
-    "COSTCENTER": "costcenter",
-    "CURRENCY": "currency",
-    "CUSTOMER": "customer",
-    "DATASOURCE": "datasource",
-    "ENTITY": "entity",
-    "ICP": "icp",
-    "LOCATION": "location",
-    "PRODUCTLINE": "productline",
-    "SCENARIO": "scenario",
-    "VERSION": "version",
-    "VIEW": "view",
-    "YEAR": "year",
-    "PERIOD": "period",
-    "Amount": "amount",
-    "DATE": "date",
-    "QUARTER": "quarter",
-    "COSTCENTER_PRODUCTLINE": "costcenter_productline",
-    "CC_PR_AC": "cc_pr_ac",
-    "Account_Code": "account_code",
-    "Account_L4": "account_L4",
-    "Account_L5_Description": "account_L5_Description",
-    "Product_Line": "product_line",
-    "Product_L3_Description": "product_L3_Description",
-    "Cost_Center_Code": "cost_center_code",
-    "Cost_Center_L3_Description": "cost_center_L3_Description",
-    "KPI": "kpi",
-    "FACT_SOURCE": "fact_source",
-    "Actual": "actual_months",
-    "Forecasted": "forecasted_months"
-}
-
-
-
-
-
-
-
-df_final = df_filtered
-
-for old, new in rename_map.items():
-    if old in df_final.columns:
-        df_final = df_final.withColumnRenamed(old, new)
-
-
-
-
-
-
 from pyspark.sql import functions as F
 
-df_final = df_final.withColumn("date", F.to_date("date"))
+# ---------- Load base tables ----------
+actual_df   = spark.table("FPNA_FISRPT_SILVER.dbo.ACTUALS")
+plan_df     = spark.table("FPNA_FISRPT_SILVER.dbo.PLAN")
+forecast_df = spark.table("FPNA_FISRPT_SILVER.dbo.FORECAST")
 
-df_final = df_final.withColumn(
-    "actual_months",
-    F.coalesce("actual_months", F.lit(0))
-)
+account_df   = spark.table("FPNA_FISRPT_SILVER.dbo.account")
+product_df   = spark.table("FPNA_FISRPT_SILVER.dbo.product")
+costcenter_df = spark.table("FPNA_FISRPT_SILVER.dbo.cost_center")
 
-df_final = df_final.withColumn(
-    "forecasted_months",
-    F.coalesce("forecasted_months", F.lit(0))
+# ---------- Helper to prepare fact with dims ----------
+def prepare_fact(df, source_name: str):
+    d  = df.alias("d")
+    ad = account_df.alias("ad")
+    pd = product_df.alias("pd")
+    cc = costcenter_df.alias("cc")
+
+    # Join facts with dimensions
+    joined = (
+        d.join(ad, F.col("d.ACCOUNT")    == F.col("ad.Account"),     "left")
+         .join(pd, F.col("d.PRODUCTLINE") == F.col("pd.ProductLine"), "left")
+         .join(cc, F.col("d.COSTCENTER")  == F.col("cc.COSTCENTER"),  "left")
+    )
+
+    # KPI tagging (same as before – only Revenue / OPEX / EBITDA)
+    joined = joined.withColumn(
+        "KPI",
+        F.when(F.col("ad.L5_Description") == "Revenue",             "Revenue") \
+         .when(F.col("ad.L5_Description") == "Operating Expenses",  "OPEX") \
+         .when(F.col("ad.L4") == "EBITDA",                          "EBITDA")
+    ).filter(F.col("KPI").isNotNull())
+
+    # Select ONLY the columns we ultimately need (fact + dim)
+    cols = [
+        # Product hierarchy (L3–L8)
+        F.col("pd.L3_Description").alias("product_L3_Description"),
+        F.col("pd.L4_Description").alias("product_L4_Description"),
+        F.col("pd.L5_Description").alias("product_L5_Description"),
+        F.col("pd.L6_Description").alias("product_L6_Description"),
+        F.col("pd.L7_Description").alias("product_L7_Description"),
+        F.col("pd.L8_Description").alias("product_L8_Description"),
+
+        # Account hierarchy (L5–L7)
+        F.col("ad.L5_Description").alias("account_L5_Description"),
+        F.col("ad.L6_Description").alias("account_L6_Description"),
+        F.col("ad.L7_Description").alias("account_L7_Description"),
+
+        # Cost center hierarchy (L1–L4)
+        F.col("cc.L1_Description").alias("CC_L1_Description"),
+        F.col("cc.L2_Description").alias("CC_L2_Description"),
+        F.col("cc.L3_Description").alias("CC_L3_Description"),
+        F.col("cc.L4_Description").alias("CC_L4_Description"),
+
+        # Fact fields
+        F.col("d.ACCOUNT").alias("account"),
+        F.col("d.COSTCENTER").alias("costcenter"),
+        F.col("d.PRODUCTLINE").alias("productline"),
+        F.col("d.SCENARIO").alias("scenario"),
+        F.col("d.VERSION").alias("version"),
+        F.col("d.Amount").alias("amount"),
+        F.col("d.YEAR").alias("year"),
+        F.col("d.QUARTER").alias("quarter"),
+        F.col("d.DATE").alias("date_raw"),
+
+        # Fact source
+        F.lit(source_name).alias("FACT_SOURCE"),
+    ]
+
+    return joined.select(cols)
+
+# ---------- Build granular (all years, all fact sources) ----------
+act_kpi  = prepare_fact(actual_df,   "ACTUALS")
+plan_kpi = prepare_fact(plan_df,     "PLAN")
+fcst_kpi = prepare_fact(forecast_df, "FORECAST")
+
+granular = (
+    act_kpi
+      .unionByName(plan_kpi,  allowMissingColumns=True)
+      .unionByName(fcst_kpi,  allowMissingColumns=True)
 )
