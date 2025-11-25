@@ -47,3 +47,29 @@ def prepare_fact(df, source_name):
         # Flag
         F.lit(source_name).alias("fact_source")
     )
+
+
+
+
+
+
+
+
+granular = (
+    granular
+    .withColumn("date", F.to_date("date_raw"))
+    .drop("date_raw")
+)
+
+granular = granular.fillna({"actual_months": 0, "forecasted_months": 0})
+
+
+
+
+
+
+
+df_2426 = granular.filter(
+    (F.col("year").isin(2024, 2025)) |
+    ((F.col("year") == 2026) & (F.col("scenario") == "Planned"))
+)
