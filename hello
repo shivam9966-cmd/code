@@ -1,69 +1,21 @@
-rename_map = {
-    # Product descriptions
-    "Product_L3_Description": "product_L3_Description",
-    "Product_L4_Description": "product_L4_Description",
-    "Product_L5_Description": "product_L5_Description",
-    "Product_L6_Description": "product_L6_Description",
-    "Product_L7_Description": "product_L7_Description",
-    "Product_L8_Description": "product_L8_Description",
-
-    # Account descriptions
-    "Account_L5_Description": "account_L5_Description",
-    "Account_L6_Description": "account_L6_Description",
-    "Account_L7_Description": "account_L7_Description",
-
-    # Cost center descriptions
-    "CC_L1_Description": "CC_L1_Description",
-    "CC_L2_Description": "CC_L2_Description",
-    "CC_L3_Description": "CC_L3_Description",
-    "CC_L4_Description": "CC_L4_Description",
-
-    # Direct pass-through columns
-    "account": "account",
-    "costcenter": "costcenter",
-    "productline": "productline",
-    "scenario": "scenario",
-
-    # Fix these per Excel
-    "Actual": "actual_months",
-    "Forecasted": "forecasted_months",
-
-    "version": "version",
-    "amount": "amount",
-    "year": "year",
-    "quarter": "quarter",
-
-    
-    "DATE": "date"
-}
-
-
-
-
-
-
-
 from pyspark.sql import functions as F
 
 df_clean = df_filtered
 
-# Apply renames
 for old, new in rename_map.items():
     if old in df_clean.columns:
         df_clean = df_clean.withColumnRenamed(old, new)
 
-# Convert date to actual date type
+# Ensure date becomes actual date type
 df_clean = df_clean.withColumn("date", F.to_date("date"))
 
-# Replace nulls
+# Ensure nulls replaced for actual & forecasted
 df_clean = df_clean.withColumn(
-    "actual_months", F.coalesce(F.col("actual_months"), F.lit(0))
+    "actual_months", F.coalesce("actual_months", F.lit(0))
 )
 
 df_clean = df_clean.withColumn(
-    "forecasted_months", F.coalesce(F.col("forecasted_months"), F.lit(0))
+    "forecasted_months", F.coalesce("forecasted_months", F.lit(0))
 )
 
-df_clean.show(50)
-
-
+df_clean.show(20)
