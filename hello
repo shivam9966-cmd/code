@@ -1,3 +1,10 @@
 from notebookutils import mssparkutils
 
-mssparkutils.fs.ls("Files")
+print("Root:")
+print(mssparkutils.fs.ls("/"))
+
+print("Lakehouse:")
+print(mssparkutils.fs.ls("lakehouse"))
+
+print("Default Lakehouse Files:")
+print(mssparkutils.fs.ls("lakehouse/default/Files"))
