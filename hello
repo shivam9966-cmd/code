@@ -1,21 +1,11 @@
-cols_to_drop = [
-    "CURRENCY",
-    "CUSTOMER",
-    "DATASOURCE",
-    "ENTITY",
-    "ICP",
-    "LOCATION",
-    "VIEW",
-    "PERIOD",
-    " date",
-    "COSTCENTER_PRODUCTLINE",
-    "CC_PR AC",
-    "account_Code",
-    "account 14",
-    "KPI",
-    "FACT_SOURCE",
-    "YEAR NUM"
-]
+output_path = "Files/FINAL_SINGLE_CSV"
 
+(df_clean
+     .coalesce(1)                 # <- forces ONE CSV file
+     .write
+     .mode("overwrite")
+     .option("header", True)
+     .csv(output_path)
+)
 
-df_clean = df_csv.drop(*[c for c in cols_to_drop if c in df_csv.columns])
+print("Single CSV saved to:", output_path)
