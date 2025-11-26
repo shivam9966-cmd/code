@@ -1,127 +1,177 @@
-
 import pandas as pd
 
-df = pd.read_csv("granular_subset_single.csv")
 
-DATE_COL   = "DATE"
-AMOUNT_COL = "AMOUNT"
-BUCKET_COL = "account_L5_Description"
-L6_COL     = "account_L6_Description"
+def normalize_value(x):
+    if x is None:
+        return None
+    return str(x).strip()
 
-df[DATE_COL] = pd.to_datetime(df[DATE_COL])
-
-
-def normalize_l6(x):
-    x = str(x).strip().lower()
-    if "recurring" in x and "non" not in x:
-        return "Recurring Revenue"
-    if "non" in x:
-        return "Non Recurring Revenue"
-    if "professional" in x or "ps" in x:
-        return "Professional Services Revenue"
-    return x  # fallback
-
-df[L6_COL] = df[L6_COL].apply(normalize_l6)
+def compute_variance(records):
+    if not records or len(records) < 2:
+        return 0.0
+    first = records[0]["amount"]
+    last  = records[-1]["amount"]
+    if first == 0:
+        return 0.0
+    return round(((last - first) / first) * 100, 2)
 
 
-###############################################################################
-# 3. FILTER TARGET MONTHS (Jun / Jul / Aug 2025)
-###############################################################################
-TARGET_YEAR   = 2025
-TARGET_MONTHS = [6, 7, 8]
-
-df_filtered = df[
-    (df[DATE_COL].dt.year == TARGET_YEAR) &
-    (df[DATE_COL].dt.month.isin(TARGET_MONTHS))
-].copy()
-
-
-
-def aggregate_l6(df, bucket_name):
-    sub = df[df[BUCKET_COL] == bucket_name]
+def aggregate_by_level(df, bucket_name, bucket_col, level_col, date_col, amount_col):
+    sub = df[df[bucket_col] == bucket_name]
     if sub.empty:
         return {}
 
     grouped = (
-        sub.groupby([L6_COL, DATE_COL])[AMOUNT_COL]
+        sub.groupby([level_col, date_col])[amount_col]
            .sum()
            .reset_index()
-           .sort_values([L6_COL, DATE_COL])
+           .sort_values([level_col, date_col])
     )
 
-    out = {}
-    for l6, grp in grouped.groupby(L6_COL):
+    output = {}
+    for level_value, grp in grouped.groupby(level_col):
         rows = []
         for _, row in grp.iterrows():
             rows.append({
-                "amount": float(row[AMOUNT_COL]),
-                "ending_date_of_month": row[DATE_COL].strftime("%Y-%m-%d")
+                "amount": float(row[amount_col]),
+                "ending_date_of_month": row[date_col].strftime("%Y-%m-%d")
             })
-        out[l6] = rows
+        output[level_value] = rows
 
-    return out
-
-
-
-ALL_REVENUE_L6 = [
-    "Recurring Revenue",
-    "Non Recurring Revenue",
-    "Professional Services Revenue"
-]
-
-def ensure_all_revenue_l6(rev_dict):
-    out = {}
-    for cat in ALL_REVENUE_L6:
-        out[cat] = rev_dict.get(cat, [
-            {"amount": 0.0, "ending_date_of_month": "2025-06-30"},
-            {"amount": 0.0, "ending_date_of_month": "2025-07-31"},
-            {"amount": 0.0, "ending_date_of_month": "2025-08-31"}
-        ])
-    return out
+    return output
 
 
 
-def top_n_l6(l6_dict, n=3):
-    totals = {k: sum(item["amount"] for item in v) for k, v in l6_dict.items()}
+def top_n_categories(cat_dict, n=3):
+    totals = {k: sum(item["amount"] for item in v) for k, v in cat_dict.items()}
     top_keys = sorted(totals, key=totals.get, reverse=True)[:n]
-    return {k: l6_dict[k] for k in top_keys}
+    return {k: cat_dict[k] for k in top_keys}
 
-def build_usecases_from_df(df):
 
-    revenue_l6_raw = aggregate_l6(df, "Revenue")
-    revenue_l6 = ensure_all_revenue_l6(revenue_l6_raw)
 
-    opex_l6_all = aggregate_l6(df, "Operating Expenses")
-    opex_l6_top3 = top_n_l6(opex_l6_all, n=3)
+def generate_usecases(
+    df,
+    year,
+    months,
+    level="L6",
+    date_col="DATE",
+    amount_col="AMOUNT",
+    bucket_col="account_L5_Description"
+):
+ 
+    LEVEL_MAP = {
+        "L6": "account_L6_Description",
+        "L7": "account_L7_Description"
+    }
 
+    if level not in LEVEL_MAP:
+        raise ValueError("Invalid level. Choose L6 or L7.")
+
+    level_col = LEVEL_MAP[level]
+
+    # Normalize
+    df = df.copy()
+    df[level_col] = df[level_col].apply(normalize_value)
+
+    # Date conversion
+    df[date_col] = pd.to_datetime(df[date_col])
+
+    # Build final month-end date list
+    target_dates = []
+    for m in months:
+        target_dates.append(pd.Period(f"{year}-{m}").end_time.strftime("%Y-%m-%d"))
+
+
+    df_filtered = df[
+        (df[date_col].dt.year == year) &
+        (df[date_col].dt.month.isin(months))
+    ].copy()
+
+    usecases = {}
+
+    # -------------------------------
+    # 3. Revenue grouping
+    # -------------------------------
+    revenue_dict = aggregate_by_level(
+        df_filtered,
+        bucket_name="Revenue",
+        bucket_col=bucket_col,
+        level_col=level_col,
+        date_col=date_col,
+        amount_col=amount_col
+    )
+
+    revenue_final = {
+        k: {
+            "values": v,
+            "variance_percent": compute_variance(v)
+        }
+        for k, v in revenue_dict.items()
+    }
+
+    usecases["Revenue"] = revenue_final
+
+    # -------------------------------
+    # 4. OPEX (Top 3 categories)
+    # -------------------------------
+    opex_dict = aggregate_by_level(
+        df_filtered,
+        bucket_name="Operating Expenses",
+        bucket_col=bucket_col,
+        level_col=level_col,
+        date_col=date_col,
+        amount_col=amount_col
+    )
+
+    opex_top3 = top_n_categories(opex_dict, n=3)
+
+    opex_final = {
+        k: {
+            "values": v,
+            "variance_percent": compute_variance(v)
+        }
+        for k, v in opex_top3.items()
+    }
+
+    usecases["OPEX"] = opex_final
+
+    # -------------------------------
+    # 5. EBITDA
+    # -------------------------------
     rev_monthly = (
-        df[df[BUCKET_COL] == "Revenue"]
-        .groupby(DATE_COL)[AMOUNT_COL].sum().reset_index()
+        df_filtered[df_filtered[bucket_col] == "Revenue"]
+        .groupby(date_col)[amount_col].sum().reset_index()
     )
     opex_monthly = (
-        df[df[BUCKET_COL] == "Operating Expenses"]
-        .groupby(DATE_COL)[AMOUNT_COL].sum().reset_index()
+        df_filtered[df_filtered[bucket_col] == "Operating Expenses"]
+        .groupby(date_col)[amount_col].sum().reset_index()
     )
 
-    rev_map = {row[DATE_COL].strftime("%Y-%m-%d"): float(row[AMOUNT_COL]) for _, row in rev_monthly.iterrows()}
-    opex_map = {row[DATE_COL].strftime("%Y-%m-%d"): float(row[AMOUNT_COL]) for _, row in opex_monthly.iterrows()}
+    rev_map  = {r[date_col].strftime("%Y-%m-%d"): float(r[amount_col]) for _, r in rev_monthly.iterrows()}
+    opex_map = {r[date_col].strftime("%Y-%m-%d"): float(r[amount_col]) for _, r in opex_monthly.iterrows()}
 
     ebitda_records = []
-    all_months = sorted(set(rev_map.keys()) | set(opex_map.keys()))
-
-    for m in all_months:
+    for m in target_dates:
         if m in rev_map and m in opex_map:
             ebitda_records.append({
                 "amount": rev_map[m] - opex_map[m],
                 "ending_date_of_month": m
             })
 
-    return {
-        "Revenue": revenue_l6,
-        "OPEX": opex_l6_top3,
-        "EBITDA": { "ebitda": ebitda_records }
+    usecases["EBITDA"] = {
+        "ebitda": ebitda_records,
+        "variance_percent": compute_variance(ebitda_records)
     }
 
+    return usecases
 
-usecases = build_usecases_from_df(df_filtered)
+
+
+
+
+
+
+
+usecases = generate_usecases(df, year=2025, months=[6,7,8], level="L6")
 usecases
+
