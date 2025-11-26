@@ -1,11 +1,1 @@
-output_path = "Files/FINAL_SINGLE_CSV"
-
-(df_clean
-     .coalesce(1)                 # <- forces ONE CSV file
-     .write
-     .mode("overwrite")
-     .option("header", True)
-     .csv(output_path)
-)
-
-print("Single CSV saved to:", output_path)
+df_clean.select("actual_months").distinct().orderBy("actual_months").show()
