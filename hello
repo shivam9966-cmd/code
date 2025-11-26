@@ -1,1 +1,127 @@
-df_filtered[df_filtered[BUCKET_COL] == "Revenue"][L6_COL].unique()
+
+import pandas as pd
+
+df = pd.read_csv("granular_subset_single.csv")
+
+DATE_COL   = "DATE"
+AMOUNT_COL = "AMOUNT"
+BUCKET_COL = "account_L5_Description"
+L6_COL     = "account_L6_Description"
+
+df[DATE_COL] = pd.to_datetime(df[DATE_COL])
+
+
+def normalize_l6(x):
+    x = str(x).strip().lower()
+    if "recurring" in x and "non" not in x:
+        return "Recurring Revenue"
+    if "non" in x:
+        return "Non Recurring Revenue"
+    if "professional" in x or "ps" in x:
+        return "Professional Services Revenue"
+    return x  # fallback
+
+df[L6_COL] = df[L6_COL].apply(normalize_l6)
+
+
+###############################################################################
+# 3. FILTER TARGET MONTHS (Jun / Jul / Aug 2025)
+###############################################################################
+TARGET_YEAR   = 2025
+TARGET_MONTHS = [6, 7, 8]
+
+df_filtered = df[
+    (df[DATE_COL].dt.year == TARGET_YEAR) &
+    (df[DATE_COL].dt.month.isin(TARGET_MONTHS))
+].copy()
+
+
+
+def aggregate_l6(df, bucket_name):
+    sub = df[df[BUCKET_COL] == bucket_name]
+    if sub.empty:
+        return {}
+
+    grouped = (
+        sub.groupby([L6_COL, DATE_COL])[AMOUNT_COL]
+           .sum()
+           .reset_index()
+           .sort_values([L6_COL, DATE_COL])
+    )
+
+    out = {}
+    for l6, grp in grouped.groupby(L6_COL):
+        rows = []
+        for _, row in grp.iterrows():
+            rows.append({
+                "amount": float(row[AMOUNT_COL]),
+                "ending_date_of_month": row[DATE_COL].strftime("%Y-%m-%d")
+            })
+        out[l6] = rows
+
+    return out
+
+
+
+ALL_REVENUE_L6 = [
+    "Recurring Revenue",
+    "Non Recurring Revenue",
+    "Professional Services Revenue"
+]
+
+def ensure_all_revenue_l6(rev_dict):
+    out = {}
+    for cat in ALL_REVENUE_L6:
+        out[cat] = rev_dict.get(cat, [
+            {"amount": 0.0, "ending_date_of_month": "2025-06-30"},
+            {"amount": 0.0, "ending_date_of_month": "2025-07-31"},
+            {"amount": 0.0, "ending_date_of_month": "2025-08-31"}
+        ])
+    return out
+
+
+
+def top_n_l6(l6_dict, n=3):
+    totals = {k: sum(item["amount"] for item in v) for k, v in l6_dict.items()}
+    top_keys = sorted(totals, key=totals.get, reverse=True)[:n]
+    return {k: l6_dict[k] for k in top_keys}
+
+def build_usecases_from_df(df):
+
+    revenue_l6_raw = aggregate_l6(df, "Revenue")
+    revenue_l6 = ensure_all_revenue_l6(revenue_l6_raw)
+
+    opex_l6_all = aggregate_l6(df, "Operating Expenses")
+    opex_l6_top3 = top_n_l6(opex_l6_all, n=3)
+
+    rev_monthly = (
+        df[df[BUCKET_COL] == "Revenue"]
+        .groupby(DATE_COL)[AMOUNT_COL].sum().reset_index()
+    )
+    opex_monthly = (
+        df[df[BUCKET_COL] == "Operating Expenses"]
+        .groupby(DATE_COL)[AMOUNT_COL].sum().reset_index()
+    )
+
+    rev_map = {row[DATE_COL].strftime("%Y-%m-%d"): float(row[AMOUNT_COL]) for _, row in rev_monthly.iterrows()}
+    opex_map = {row[DATE_COL].strftime("%Y-%m-%d"): float(row[AMOUNT_COL]) for _, row in opex_monthly.iterrows()}
+
+    ebitda_records = []
+    all_months = sorted(set(rev_map.keys()) | set(opex_map.keys()))
+
+    for m in all_months:
+        if m in rev_map and m in opex_map:
+            ebitda_records.append({
+                "amount": rev_map[m] - opex_map[m],
+                "ending_date_of_month": m
+            })
+
+    return {
+        "Revenue": revenue_l6,
+        "OPEX": opex_l6_top3,
+        "EBITDA": { "ebitda": ebitda_records }
+    }
+
+
+usecases = build_usecases_from_df(df_filtered)
+usecases
