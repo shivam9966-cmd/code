@@ -1,1 +1,32 @@
-df_clean.select("actual_months").distinct().orderBy("actual_months").show()
+from pyspark.sql import functions as F
+import pandas as pd
+
+table_name = "kpi_data"
+
+def to_sql(pdf_iter):
+    for pdf in pdf_iter:
+        cols = pdf.columns
+        col_str = ",".join(cols)
+
+        lines = []
+        for _, row in pdf.iterrows():
+            vals = []
+            for v in row:
+                v = "" if pd.isna(v) else str(v).replace("'", "''")
+                vals.append(f"'{v}'")
+            line = f"INSERT INTO {table_name} ({col_str}) VALUES ({','.join(vals)});"
+            lines.append(line)
+
+        yield pd.DataFrame({"sql_line": lines})
+
+output_path = "Files/FINAL_SINGLE_CSV/sql_dump"
+
+(df_clean
+ .mapInPandas(to_sql, schema="sql_line string")
+ .coalesce(1)                         
+ .write
+ .mode("overwrite")
+ .text(output_path)
+)
+
+print("FAST SQL dump created at:", output_path)
