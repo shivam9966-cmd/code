@@ -1,4 +1,21 @@
-df_csv = spark.read.option("header", True).csv("Files/SQL_TMP/final_csv")
-df_csv.columns
+cols_to_drop = [
+    "CURRENCY",
+    "CUSTOMER",
+    "DATASOURCE",
+    "ENTITY",
+    "ICP",
+    "LOCATION",
+    "VIEW",
+    "PERIOD",
+    " date",
+    "COSTCENTER_PRODUCTLINE",
+    "CC_PR AC",
+    "account_Code",
+    "account 14",
+    "KPI",
+    "FACT_SOURCE",
+    "YEAR NUM"
+]
 
 
+df_clean = df_csv.drop(*[c for c in cols_to_drop if c in df_csv.columns])
