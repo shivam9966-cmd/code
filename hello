@@ -3,19 +3,24 @@ import json
 from llama_index.llms.azure_openai import AzureOpenAI
 from llama_index.core import Settings
 
-
+###############################################################################
+# -------------------------------  LLM SETUP  ---------------------------------
+###############################################################################
 llm = AzureOpenAI(
     model="gpt-4o-mini",
-    deployment_name="XXX",          # your deployment
-    api_key="XXX",                  # your key
-    azure_endpoint="XXX",           # your endpoint
-    api_version="XXX",              # your version
+    deployment_name="XXX",
+    api_key="XXX",
+    azure_endpoint="XXX",
+    api_version="XXX",
     max_tokens=2000,
     temperature=0.2
 )
 
 Settings.llm = llm
 
+###############################################################################
+# -------------- FIXED SAFE PROMPT (ALL {} ESCAPED EXCEPT {level}) -----------
+###############################################################################
 SUMMARY_PROMPT = """
 You are an FP&A analytics expert.
 
@@ -36,28 +41,30 @@ Your task is to produce a clean JSON summary containing:
 6. areas_of_focus → 2–4 tactical recommendations
 
 Formatting rules:
-- Use emojis for indicators:
+- USE emojis only for indicators:
   📈 increase
   📉 decrease
   ⚠️ risk
   ⭐ positive
-- No nested JSON inside fields.
-- No commentary outside JSON.
+- NO nested JSON inside fields.
+- NO commentary outside JSON.
 
-Return strictly:
+Return strictly in this JSON structure:
 
-{
+{{
   "level": "",
   "executive_summary": [],
-  "usd_values": {},
+  "usd_values": {{}},
   "variance_percent": "",
   "top_drivers": [],
   "risks_and_opportunities": [],
   "areas_of_focus": []
-}
+}}
 """
 
-
+###############################################################################
+# ----------------------  HELPER FNCS  ----------------------------------------
+###############################################################################
 def normalize_value(x):
     return str(x).strip() if x is not None else None
 
@@ -84,7 +91,7 @@ def aggregate_by_level(df, bucket_name, bucket_col, level_col, date_col, amount_
         .sort_values([level_col, date_col])
     )
 
-    output = {}
+    out = {}
     for level_value, grp in grouped.groupby(level_col):
         rows = []
         for _, row in grp.iterrows():
@@ -92,9 +99,9 @@ def aggregate_by_level(df, bucket_name, bucket_col, level_col, date_col, amount_
                 "amount": float(row[amount_col]),
                 "ending_date_of_month": row[date_col].strftime("%Y-%m-%d")
             })
-        output[level_value] = rows
+        out[level_value] = rows
 
-    return output
+    return out
 
 
 def top_n_categories(cat_dict, n=3):
@@ -103,6 +110,9 @@ def top_n_categories(cat_dict, n=3):
     return {k: cat_dict[k] for k in top_keys}
 
 
+###############################################################################
+# -------------------  USECASE GENERATOR  -------------------------------------
+###############################################################################
 def generate_usecases(
     df,
     year,
@@ -130,49 +140,32 @@ def generate_usecases(
 
     usecases = {}
 
-    # -------------------- Revenue --------------------
-    revenue_dict = aggregate_by_level(
-        df_filtered, "Revenue", bucket_col, level_col, date_col, amount_col
-    )
-
+    # ----------------- Revenue -----------------
+    revenue_dict = aggregate_by_level(df_filtered, "Revenue", bucket_col, level_col, date_col, amount_col)
     revenue_final = {
-        k: {
-            "values": v,
-            "variance_percent": compute_variance(v)
-        }
+        k: {"values": v, "variance_percent": compute_variance(v)}
         for k, v in revenue_dict.items()
     }
-
     usecases["Revenue"] = revenue_final
 
-    # --------------------- OPEX ----------------------
-    opex_dict = aggregate_by_level(
-        df_filtered, "Operating Expenses", bucket_col, level_col, date_col, amount_col
-    )
-
-    opex_top3 = top_n_categories(opex_dict, n=3)
+    # ----------------- OPEX --------------------
+    opex_dict = aggregate_by_level(df_filtered, "Operating Expenses", bucket_col, level_col, date_col, amount_col)
+    opex_top3 = top_n_categories(opex_dict)
 
     opex_final = {
-        k: {
-            "values": v,
-            "variance_percent": compute_variance(v)
-        }
+        k: {"values": v, "variance_percent": compute_variance(v)}
         for k, v in opex_top3.items()
     }
-
     usecases["OPEX"] = opex_final
 
-    # --------------------- EBITDA --------------------
+    # ----------------- EBITDA ------------------
     rev_monthly = (
         df_filtered[df_filtered[bucket_col] == "Revenue"]
-        .groupby(date_col)[amount_col].sum()
-        .reset_index()
+        .groupby(date_col)[amount_col].sum().reset_index()
     )
-
     opex_monthly = (
         df_filtered[df_filtered[bucket_col] == "Operating Expenses"]
-        .groupby(date_col)[amount_col].sum()
-        .reset_index()
+        .groupby(date_col)[amount_col].sum().reset_index()
     )
 
     rev_map = {r[date_col].strftime("%Y-%m-%d"): float(r[amount_col]) for _, r in rev_monthly.iterrows()}
@@ -194,8 +187,9 @@ def generate_usecases(
 
     return usecases
 
-
-
+###############################################################################
+# ----------------------  LLM SUMMARIZATION  ----------------------------------
+###############################################################################
 def summarize_one_level(level_name, data_dict):
     prompt = SUMMARY_PROMPT.format(level=level_name)
     final_prompt = f"{prompt}\n\nHere is the JSON data:\n{json.dumps(data_dict, indent=2)}"
@@ -205,17 +199,19 @@ def summarize_one_level(level_name, data_dict):
     try:
         return json.loads(response.text)
     except:
-        return {"error": "Invalid JSON returned", "raw": response.text}
+        return {"error": "Invalid JSON", "raw": response.text}
 
 
 def generate_llm_summary(usecases):
     summary = {}
-    for lvl in ["Revenue", "OPEX", "EBITDA"]:
-        if lvl in usecases:
-            summary[lvl] = summarize_one_level(lvl, usecases[lvl])
+    for cat in ["Revenue", "OPEX", "EBITDA"]:
+        summary[cat] = summarize_one_level(cat, usecases[cat])
     return summary
 
 
+###############################################################################
+# --------------------------- MASTER FUNCTION ---------------------------------
+###############################################################################
 def generate_business_summary(df, year, months, level="L6"):
     usecases = generate_usecases(df, year, months, level=level)
     summary = generate_llm_summary(usecases)
