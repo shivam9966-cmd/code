@@ -1,31 +1,181 @@
-# -------------------------------
-# 5. EBITDA (FIXED)
-# -------------------------------
-rev_monthly = (
-    df_filtered[df_filtered[bucket_col] == "Revenue"]
-    .groupby(date_col)[amount_col].sum().reset_index()
-)
+import pandas as pd
 
-opex_monthly = (
-    df_filtered[df_filtered[bucket_col] == "Operating Expenses"]
-    .groupby(date_col)[amount_col].sum().reset_index()
-)
+###############################################################################
+# NORMALIZE L6 & L7 VALUES
+###############################################################################
+def normalize_value(x):
+    if x is None:
+        return None
+    return str(x).strip()
 
-# Convert to maps
-rev_map  = {r[date_col].strftime("%Y-%m-%d"): float(r[amount_col]) for _, r in rev_monthly.iterrows()}
-opex_map = {r[date_col].strftime("%Y-%m-%d"): float(r[amount_col]) for _, r in opex_monthly.iterrows()}
 
-# Use REAL dates present in dataset
-common_dates = sorted(set(rev_map.keys()) & set(opex_map.keys()))
+###############################################################################
+# VARIANCE CALCULATOR
+###############################################################################
+def compute_variance(records):
+    if not records or len(records) < 2:
+        return 0.0
+    first = records[0]["amount"]
+    last  = records[-1]["amount"]
+    if first == 0:
+        return 0.0
+    return round(((last - first) / first) * 100, 2)
 
-ebitda_records = []
-for d in common_dates:
-    ebitda_records.append({
-        "amount": rev_map[d] - opex_map[d],
-        "ending_date_of_month": d
-    })
 
-usecases["EBITDA"] = {
-    "ebitda": ebitda_records,
-    "variance_percent": compute_variance(ebitda_records)
-}
+###############################################################################
+# AGGREGATE BY LEVEL (L6 OR L7)
+###############################################################################
+def aggregate_by_level(df, bucket_name, bucket_col, level_col, date_col, amount_col):
+    sub = df[df[bucket_col] == bucket_name]
+    if sub.empty:
+        return {}
+
+    grouped = (
+        sub.groupby([level_col, date_col])[amount_col]
+           .sum()
+           .reset_index()
+           .sort_values([level_col, date_col])
+    )
+
+    output = {}
+    for level_value, grp in grouped.groupby(level_col):
+        rows = []
+        for _, row in grp.iterrows():
+            rows.append({
+                "amount": float(row[amount_col]),
+                "ending_date_of_month": row[date_col].strftime("%Y-%m-%d")
+            })
+        output[level_value] = rows
+
+    return output
+
+
+###############################################################################
+# SELECT TOP 3 CATEGORIES FOR OPEX
+###############################################################################
+def top_n_categories(cat_dict, n=3):
+    totals = {k: sum(item["amount"] for item in v) for k, v in cat_dict.items()}
+    top_keys = sorted(totals, key=totals.get, reverse=True)[:n]
+    return {k: cat_dict[k] for k in top_keys}
+
+
+###############################################################################
+# MASTER FUNCTION — Select Year, Months, Level (L6/L7)
+###############################################################################
+def generate_usecases(
+    df,
+    year,
+    months,
+    level="L6",
+    date_col="DATE",
+    amount_col="AMOUNT",
+    bucket_col="account_L5_Description"
+):
+    # -------------------------------------------------------------------------
+    # 1. SELECT LEVEL MAPPING (Important)
+    # -------------------------------------------------------------------------
+    LEVEL_MAP = {
+        "L6": "account_L6_Description",
+        "L7": "account_L7_Description"
+    }
+
+    if level not in LEVEL_MAP:
+        raise ValueError("Invalid level. Choose L6 or L7.")
+
+    level_col = LEVEL_MAP[level]
+
+    # Normalize groupby fields
+    df = df.copy()
+    df[level_col] = df[level_col].apply(normalize_value)
+
+    # Convert date
+    df[date_col] = pd.to_datetime(df[date_col])
+
+    # Filter months
+    df_filtered = df[
+        (df[date_col].dt.year == year) &
+        (df[date_col].dt.month.isin(months))
+    ].copy()
+
+    usecases = {}
+
+    # -------------------------------------------------------------------------
+    # 2. REVENUE (ALL CATEGORIES)
+    # -------------------------------------------------------------------------
+    revenue_dict = aggregate_by_level(
+        df_filtered,
+        bucket_name="Revenue",
+        bucket_col=bucket_col,
+        level_col=level_col,
+        date_col=date_col,
+        amount_col=amount_col
+    )
+
+    revenue_final = {
+        k: {
+            "values": v,
+            "variance_percent": compute_variance(v)
+        }
+        for k, v in revenue_dict.items()
+    }
+
+    usecases["Revenue"] = revenue_final
+
+    # -------------------------------------------------------------------------
+    # 3. OPEX (TOP 3 CATEGORIES)
+    # -------------------------------------------------------------------------
+    opex_dict = aggregate_by_level(
+        df_filtered,
+        bucket_name="Operating Expenses",
+        bucket_col=bucket_col,
+        level_col=level_col,
+        date_col=date_col,
+        amount_col=amount_col
+    )
+
+    opex_top3 = top_n_categories(opex_dict, n=3)
+
+    opex_final = {
+        k: {
+            "values": v,
+            "variance_percent": compute_variance(v)
+        }
+        for k, v in opex_top3.items()
+    }
+
+    usecases["OPEX"] = opex_final
+
+    # -------------------------------------------------------------------------
+    # 4. EBITDA (CORRECTED — now uses real dates, never empty)
+    # -------------------------------------------------------------------------
+    rev_monthly = (
+        df_filtered[df_filtered[bucket_col] == "Revenue"]
+        .groupby(date_col)[amount_col].sum()
+        .reset_index()
+    )
+
+    opex_monthly = (
+        df_filtered[df_filtered[bucket_col] == "Operating Expenses"]
+        .groupby(date_col)[amount_col].sum()
+        .reset_index()
+    )
+
+    rev_map = {r[date_col].strftime("%Y-%m-%d"): float(r[amount_col]) for _, r in rev_monthly.iterrows()}
+    opex_map = {r[date_col].strftime("%Y-%m-%d"): float(r[amount_col]) for _, r in opex_monthly.iterrows()}
+
+    # REAL common dates
+    common_dates = sorted(set(rev_map.keys()) & set(opex_map.keys()))
+
+    ebitda_records = []
+    for d in common_dates:
+        ebitda_records.append({
+            "amount": rev_map[d] - opex_map[d],
+            "ending_date_of_month": d
+        })
+
+    usecases["EBITDA"] = {
+        "ebitda": ebitda_records,
+        "variance_percent": compute_variance(ebitda_records)
+    }
+
+    return usecases
