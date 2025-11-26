@@ -1,11 +1,111 @@
-(
-    df_clean
-        .coalesce(1)                            
-        .write
-        .mode("overwrite")
-        .option("header", True)
-        .option("compression", "gzip")
-        .csv("Files/FINAL_SINGLE_CSV_GZIP")
-)
+############################################################
+# 1. IMPORTS + READ CSV
+############################################################
 
-print("Compressed CSV written.")
+import pandas as pd
+
+# Load your file (already uploaded in Jupyter folder)
+df = pd.read_csv("granular_subset_single.csv")
+
+print("Columns:", df.columns.tolist())
+df.head()
+
+
+############################################################
+# 2. DEFINE MAIN COLUMN NAMES (edit only if different)
+############################################################
+
+DATE_COL   = "DATE"                       # <-- put your actual date column here
+AMOUNT_COL = "AMOUNT"                     # numeric values
+BUCKET_COL = "account_L5_Description"     # contains "Revenue" / "Operating Expenses"
+
+# Convert DATE column to datetime
+df[DATE_COL] = pd.to_datetime(df[DATE_COL])
+
+############################################################
+# 3. SELECT MONTHS TO USE (June, July, August 2025)
+############################################################
+
+TARGET_YEAR   = 2025
+TARGET_MONTHS = [6, 7, 8]   # change if needed
+
+df_filtered = df[
+    (df[DATE_COL].dt.year == TARGET_YEAR) &
+    (df[DATE_COL].dt.month.isin(TARGET_MONTHS))
+].copy()
+
+print("Filtered rows:", len(df_filtered))
+df_filtered.head()
+
+
+############################################################
+# 4. AGGREGATION HELPER
+############################################################
+
+def aggregate_bucket(df, bucket_name):
+    """
+    Sum AMOUNT by DATE for the chosen bucket:
+    - Revenue
+    - Operating Expenses
+    """
+    sub = df[df[BUCKET_COL] == bucket_name]
+    if sub.empty:
+        return []
+
+    grouped = (
+        sub.groupby(DATE_COL)[AMOUNT_COL]
+        .sum()
+        .reset_index()
+        .sort_values(DATE_COL)
+    )
+
+    out = []
+    for _, row in grouped.iterrows():
+        out.append({
+            "amount": float(row[AMOUNT_COL]),
+            "ending_date_of_month": row[DATE_COL].strftime("%Y-%m-%d")
+        })
+    return out
+
+
+############################################################
+# 5. BUILD THE USECASES DICT FOR REVENUE / OPEX / EBITDA
+############################################################
+
+def build_usecases_from_df(df):
+
+    revenue_list = aggregate_bucket(df, "Revenue")
+    opex_list    = aggregate_bucket(df, "Operating Expenses")
+
+    # compute EBITDA = Revenue_total – OPEX_total per month
+    ebitda_records = []
+    rev_map  = {x["ending_date_of_month"]: x["amount"] for x in revenue_list}
+    opex_map = {x["ending_date_of_month"]: x["amount"] for x in opex_list}
+
+    all_months = sorted(set(rev_map.keys()) | set(opex_map.keys()))
+    for m in all_months:
+        if m in rev_map and m in opex_map:
+            ebitda_val = rev_map[m] - opex_map[m]
+            ebitda_records.append({
+                "amount": float(ebitda_val),
+                "ending_date_of_month": m
+            })
+
+    usecases = {
+        "Revenue": {
+            "Total Revenue": revenue_list
+        },
+        "OPEX": {
+            "Operating Expense Total": opex_list
+        },
+        "EBITDA": {
+            "ebitda": ebitda_records
+        }
+    }
+
+    return usecases
+
+
+# Create final usecases object
+usecases = build_usecases_from_df(df_filtered)
+usecases
