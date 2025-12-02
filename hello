@@ -1,318 +1,134 @@
 import pandas as pd
-import json
-import re
-from llama_index.llms.azure_openai import AzureOpenAI
-from llama_index.core import Settings
+from typing import Dict, Any
 
-# -------------------------------------------------------------------
-# 0. LLM SETUP  (FILL YOUR AZURE DETAILS)
-# -------------------------------------------------------------------
-llm = AzureOpenAI(
-    model="gpt-4o-mini",
-    deployment_name="XXX",      # your deployment
-    api_key="XXX",              # your key
-    azure_endpoint="XXX",       # your endpoint
-    api_version="XXX",          # your API version
-    max_tokens=1200,
-    temperature=0.15,
-)
-
-Settings.llm = llm
-
-# -------------------------------------------------------------------
-# 1. HELPER FUNCTIONS (AGG, VARIANCE, SCENARIO)
-# -------------------------------------------------------------------
-def normalize_value(x):
-    return str(x).strip() if x is not None else None
-
-
-def compute_variance(records):
-    """records: list[{amount, ending_date_of_month}], sorted by date."""
-    if not records or len(records) < 2:
-        return 0.0
-    first = records[0]["amount"]
-    last = records[-1]["amount"]
-    if first == 0:
-        return 0.0
-    return round(((last - first) / first) * 100, 2)
-
-
-def aggregate_by_level(df, bucket_name, bucket_col, level_col, date_col, amount_col):
-    """Aggregate by chosen level (L6 or L7) for a given bucket (Revenue / Opex)."""
-    sub = df[df[bucket_col] == bucket_name]
-    if sub.empty:
-        return {}
-
-    grouped = (
-        sub.groupby([level_col, date_col])[amount_col]
-        .sum()
-        .reset_index()
-        .sort_values([level_col, date_col])
-    )
-
-    out = {}
-    for level_value, grp in grouped.groupby(level_col):
-        rows = []
-        for _, row in grp.iterrows():
-            rows.append({
-                "amount": float(row[amount_col]),
-                "ending_date_of_month": row[date_col].strftime("%Y-%m-%d"),
-            })
-        out[level_value] = rows
-
-    return out
-
-
-def top_n_categories(cat_dict, n=3):
-    """Pick top N categories by total amount."""
-    totals = {k: sum(item["amount"] for item in v) for k, v in cat_dict.items()}
-    top_keys = sorted(totals, key=totals.get, reverse=True)[:n]
-    return {k: cat_dict[k] for k in top_keys}
-
-
-def parse_scenario(code):
+def compute_kpi_snapshot(
+    df: pd.DataFrame,
+    year: int,
+    month: int,
+    level: str = "L6",
+    date_col: str = "DATE",
+    amount_col: str = "Amount",
+    bucket_col: str = "account_L5_Description",
+    level_map: Dict[str, str] = None,
+    scenario_col: str = "SCENARIO",
+) -> Dict[str, Any]:
     """
-    Parse scenario strings like:
-    'F8+4', 'F8.4', 'F8_4', '8+4', '8.4'  -> (8,4)
-    Returns (actual_months, forecast_months) or None.
+    Compute KPI snapshot for Revenue, Opex, EBITDA for a given year+month.
+
+    Output for each KPI:
+    - actual_amount          (SCENARIO = 'Actual')
+    - plan_amount            (SCENARIO = 'Plan')
+    - variance_percent       ((actual - plan) / plan * 100)
+    - l6_contribution_percent (dict of L6 heads -> % of total, where applicable)
+
+    Revenue: show ALL L6 heads
+    Opex:    show TOP 3 L6 heads by actual amount
+    EBITDA:  no L6 breakdown
     """
-    if not isinstance(code, str):
-        return None
-    m = re.search(r'F?\s*(\d+)\D+(\d+)', code)
-    if not m:
-        return None
-    return int(m.group(1)), int(m.group(2))
 
+  
+    if level_map is None:
+        level_map = {
+            "L6": "account_L6_Description",
+            "L7": "account_L7_Description",
+        }
+    if level not in level_map:
+        raise ValueError("level must be 'L6' or 'L7'")
 
-def extract_scenario_info(df, scenario_col="SCENARIO"):
-    """
-    From all scenario values present, pick:
-    - current = highest actual_months
-    - previous = second-highest actual_months (if exists)
-    """
-    codes = df[scenario_col].dropna().unique().tolist()
-    parsed = []
-    for c in codes:
-        p = parse_scenario(c)
-        if p:
-            parsed.append((c, p[0], p[1]))
-    if not parsed:
-        return {"current": None, "previous": None}
+    level_col = level_map[level]
 
-    # sort by actual_months desc
-    parsed.sort(key=lambda x: x[1], reverse=True)
-    cur_code, cur_a, cur_f = parsed[0]
-    cur_str = f"{cur_a}+{cur_f}"
-
-    prev_code = prev_str = None
-    if len(parsed) > 1:
-        prev_code, prev_a, prev_f = parsed[1]
-        prev_str = f"{prev_a}+{prev_f}"
-
-    return {
-        "current_code": cur_code,
-        "current_str": cur_str,
-        "previous_code": prev_code,
-        "previous_str": prev_str,
-    }
-
-# -------------------------------------------------------------------
-# 2. USECASE GENERATION (Revenue, Opex, EBITDA) WITH L6 / L7
-# -------------------------------------------------------------------
-def generate_usecases(
-    df,
-    year,
-    months,
-    level="L6",
-    date_col="DATE",
-    amount_col="AMOUNT",
-    bucket_col="account_L5_Description",
-    scenario_col="SCENARIO",
-):
-    LEVEL_MAP = {
-        "L6": "account_L6_Description",
-        "L7": "account_L7_Description",
-    }
-    if level not in LEVEL_MAP:
-        raise ValueError("Invalid level. Choose 'L6' or 'L7'.")
-
-    level_col = LEVEL_MAP[level]
-
+    
     df = df.copy()
-    df[level_col] = df[level_col].apply(normalize_value)
     df[date_col] = pd.to_datetime(df[date_col])
+    df[level_col] = df[level_col].astype(str).str.strip()
+-
+    mask = (df[date_col].dt.year == year) & (df[date_col].dt.month == month)
+    df_month = df[mask]
 
-    # filter by year + months
-    df_filtered = df[
-        (df[date_col].dt.year == year) & (df[date_col].dt.month.isin(months))
-    ].copy()
+    # Split actual vs plan
+    df_actual = df_month[df_month[scenario_col] == "Actual"].copy()
+    df_plan   = df_month[df_month[scenario_col] == "Plan"].copy()
 
-    # Scenario info (for the filtered slice)
-    scenario_info = extract_scenario_info(df_filtered, scenario_col=scenario_col)
-
-    usecases = {}
-
-    # ---- Revenue (all categories at chosen level) ----
-    revenue_dict = aggregate_by_level(
-        df_filtered,
-        bucket_name="Revenue",
-        bucket_col=bucket_col,
-        level_col=level_col,
-        date_col=date_col,
-        amount_col=amount_col,
-    )
-    revenue_final = {
-        k: {"values": v, "variance_percent": compute_variance(v)}
-        for k, v in revenue_dict.items()
-    }
-    usecases["Revenue"] = revenue_final
-
-    # ---- Opex (top 3 categories at chosen level) ----
-    opex_dict = aggregate_by_level(
-        df_filtered,
-        bucket_name="Operating Expenses",
-        bucket_col=bucket_col,
-        level_col=level_col,
-        date_col=date_col,
-        amount_col=amount_col,
-    )
-    opex_top3 = top_n_categories(opex_dict, n=3)
-    opex_final = {
-        k: {"values": v, "variance_percent": compute_variance(v)}
-        for k, v in opex_top3.items()
-    }
-    usecases["OPEX"] = opex_final
-
-    # ---- EBITDA (Revenue – Opex, by actual dates) ----
-    rev_monthly = (
-        df_filtered[df_filtered[bucket_col] == "Revenue"]
-        .groupby(date_col)[amount_col]
-        .sum()
-        .reset_index()
-    )
-    opex_monthly = (
-        df_filtered[df_filtered[bucket_col] == "Operating Expenses"]
-        .groupby(date_col)[amount_col]
-        .sum()
-        .reset_index()
-    )
-
-    rev_map = {
-        r[date_col].strftime("%Y-%m-%d"): float(r[amount_col])
-        for _, r in rev_monthly.iterrows()
-    }
-    opex_map = {
-        r[date_col].strftime("%Y-%m-%d"): float(r[amount_col])
-        for _, r in opex_monthly.iterrows()
-    }
-
-    common_dates = sorted(set(rev_map.keys()) & set(opex_map.keys()))
-    ebitda_records = []
-    for d in common_dates:
-        ebitda_records.append(
-            {"amount": rev_map[d] - opex_map[d], "ending_date_of_month": d}
+    # Helper to get sum by bucket
+    def kpi_sum(sub_df, bucket_value):
+        return float(
+            sub_df[sub_df[bucket_col] == bucket_value][amount_col].sum()
         )
 
-    usecases["EBITDA"] = {
-        "ebitda": ebitda_records,
-        "variance_percent": compute_variance(ebitda_records),
+ 
+    # In your data: Revenue ↔ 'Revenue', Opex ↔ 'Operating Expenses'
+    rev_actual = kpi_sum(df_actual, "Revenue")
+    rev_plan   = kpi_sum(df_plan, "Revenue")
+
+    opex_actual = kpi_sum(df_actual, "Operating Expenses")
+    opex_plan   = kpi_sum(df_plan, "Operating Expenses")
+
+    # EBITDA derived
+    ebitda_actual = rev_actual - opex_actual
+    ebitda_plan   = rev_plan - opex_plan
+
+    def variance_pct(actual, plan):
+        if plan == 0:
+            return None
+        return round((actual - plan) / plan * 100, 2)
+]
+    rev_l6_contrib = {}
+    if rev_actual != 0:
+        rev_l6 = (
+            df_actual[df_actual[bucket_col] == "Revenue"]
+            .groupby(level_col)[amount_col]
+            .sum()
+            .reset_index()
+        )
+        rev_l6["contrib_pct"] = rev_l6[amount_col] / rev_actual * 100
+        # show all heads
+        for _, row in rev_l6.iterrows():
+            rev_l6_contrib[str(row[level_col])] = round(row["contrib_pct"], 2)
+
+   
+    opex_l6_contrib = {}
+    if opex_actual != 0:
+        opex_l6 = (
+            df_actual[df_actual[bucket_col] == "Operating Expenses"]
+            .groupby(level_col)[amount_col]
+            .sum()
+            .reset_index()
+        )
+        opex_l6 = opex_l6.sort_values(amount_col, ascending=False)
+        opex_l6["contrib_pct"] = opex_l6[amount_col] / opex_actual * 100
+        # keep top 3
+        opex_l6_top3 = opex_l6.head(3)
+        for _, row in opex_l6_top3.iterrows():
+            opex_l6_contrib[str(row[level_col])] = round(row["contrib_pct"], 2)
+
+ 
+    result = {
+        "Revenue": {
+            "actual_amount": rev_actual,
+            "plan_amount": rev_plan,
+            "variance_percent": variance_pct(rev_actual, rev_plan),
+            "level_contribution_percent": rev_l6_contrib,  
+        },
+        "OPEX": {
+            "actual_amount": opex_actual,
+            "plan_amount": opex_plan,
+            "variance_percent": variance_pct(opex_actual, opex_plan),
+            "level_contribution_percent": opex_l6_contrib, 
+        },
+        "EBITDA": {
+            "actual_amount": ebitda_actual,
+            "plan_amount": ebitda_plan,
+            "variance_percent": variance_pct(ebitda_actual, ebitda_plan),
+            "level_contribution_percent": None, 
+        },
+        "meta": {
+            "year": year,
+            "month": month,
+            "level_used": level,
+        },
     }
 
-    return usecases, scenario_info
-
-# -------------------------------------------------------------------
-# 3. LLM PROMPT FOR CRISP FP&A NARRATIVE
-# -------------------------------------------------------------------
-BUSINESS_PROMPT = """
-You are a senior FP&A leader writing an executive dashboard narrative.
-
-Context:
-- Category: {category}
-- Level of breakdown: {level_name}
-- Forecast scenario: current {scenario_str}{prev_part}.
-
-Input data (JSON, already aggregated):
-{data}
-
-Write 2–3 extremely crisp bullet points (max 18 words each) in polished FP&A language.
-
-Requirements:
-- Focus ONLY on the specified category.
-- Comment on overall trend, variance and key level drivers (top contributors).
-- Use scenario wording like "8+4 forecast vs 7+5" when helpful.
-- Use qualitative language (strong / modest / flat) instead of inventing exact numbers.
-- Tone: board-ready, sophisticated, no fluff.
-- Do NOT output JSON or code. Output ONLY markdown bullets starting with "•".
-"""
-
-def generate_narrative_for_category(category, data_dict, level_name, scenario_info):
-    cur = scenario_info.get("current_str")
-    prev = scenario_info.get("previous_str")
-    scenario_str = cur if cur else "N/A"
-    prev_part = f" vs prior {prev}" if prev else ""
-
-    prompt = BUSINESS_PROMPT.format(
-        category=category,
-        level_name=level_name,
-        scenario_str=scenario_str,
-        prev_part=prev_part,
-        data=json.dumps(data_dict, indent=2),
-    )
-
-    response = llm.complete(prompt)
-    return response.text.strip()
-
-# -------------------------------------------------------------------
-# 4. MASTER FUNCTION → BUSINESS NARRATIVE (TEXT)
-# -------------------------------------------------------------------
-def generate_business_narrative(
-    df,
-    year,
-    months,
-    level="L6",
-    date_col="DATE",
-    amount_col="AMOUNT",
-    bucket_col="account_L5_Description",
-    scenario_col="SCENARIO",
-):
-    level_col_name = "account_L6_Description" if level == "L6" else "account_L7_Description"
-
-    usecases, scenario_info = generate_usecases(
-        df,
-        year,
-        months,
-        level=level,
-        date_col=date_col,
-        amount_col=amount_col,
-        bucket_col=bucket_col,
-        scenario_col=scenario_col,
-    )
-
-    narrative = {}
-
-    # Revenue tile
-    narrative["Revenue"] = generate_narrative_for_category(
-        "Revenue", usecases["Revenue"], level_col_name, scenario_info
-    )
-
-    # Opex tile
-    narrative["Opex"] = generate_narrative_for_category(
-        "OPEX", usecases["OPEX"], level_col_name, scenario_info
-    )
-
-    # EBITDA tile
-    narrative["EBITDA"] = generate_narrative_for_category(
-        "EBITDA", usecases["EBITDA"], level_col_name, scenario_info
-    )
-
-    return narrative
-
-# -------------------------------------------------------------------
-# 5. OPTIONAL: SAVE NARRATIVE AS JSON
-# -------------------------------------------------------------------
-def save_narrative_to_json(narrative_dict, path="business_narrative.json"):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(narrative_dict, f, ensure_ascii=False, indent=2)
+    return result
 
 
 
@@ -340,24 +156,8 @@ def save_narrative_to_json(narrative_dict, path="business_narrative.json"):
 
 
 
+snapshot = compute_kpi_snapshot(df["YEAR"] == "FY25")  AND  (df["DATE"].dt.month == 5)
 
 
-
-# 1) Read your granular file
-df = pd.read_csv("granular_subset_single.csv")
-
-# 2) Generate narrative for, say, Aug 2025 at L6
-narrative = generate_business_narrative(
-    df,
-    year=2025,
-    months=[8],     # Aug only, or [6,7,8] for 6–8
-    level="L6"
-)
-
-print("=== Revenue ===")
-print(narrative["Revenue"])
-print("\n=== Opex ===")
-print(narrative["Opex"])
-print("\n=== EBITDA ===")
-print(narrative["EBITDA"])
-
+from pprint import pprint
+pprint(snapshot)
