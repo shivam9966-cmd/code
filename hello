@@ -1,21 +1,56 @@
 import pandas as pd
 import numpy as np
+import json
+import calendar
+from openai import AzureOpenAI
 
 
-def compute_yoy_variance(current_value, prev_value):
+AZURE_OPENAI_ENDPOINT = "https://YOUR-RESOURCE-NAME.openai.azure.com"
+AZURE_OPENAI_API_KEY = "YOUR_API_KEY"
+AZURE_OPENAI_API_VERSION = "2024-02-15-preview"  
+AZURE_DEPLOYMENT_NAME = "YOUR_DEPLOYMENT_NAME"   
+
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version=AZURE_OPENAI_API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+)
+
+
+
+def prepare_dataframe(df: pd.DataFrame, date_col: str = "DATE") -> pd.DataFrame:
+    """Ensure DATE is datetime."""
+    df = df.copy()
+    if date_col not in df.columns:
+        raise ValueError(f"Expected date column '{date_col}' not found in dataframe.")
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    return df
+
+
+def compute_yoy_variance(current_value: float, prev_value: float):
+    """YoY % = (current - prev) / prev * 100."""
     if prev_value == 0 or pd.isna(prev_value):
         return None
     return round(((current_value - prev_value) / prev_value) * 100, 2)
 
 
+def compute_contribution(
+    df: pd.DataFrame,
+    level_col: str,
+    amount_col: str = "Amount",
+    top_n: int | None = None,
+):
+    """Compute contribution % by level_col, optionally top_n."""
+    if df.empty:
+        return {}
 
-def compute_contribution(df, level_col, kpi_col="amount", top_n=None):
     contrib = (
-        df.groupby(level_col)[kpi_col].sum()
-          .sort_values(ascending=False)
+        df.groupby(level_col)[amount_col]
+        .sum()
+        .sort_values(ascending=False)
     )
 
-    if top_n:  
+    if top_n:
         contrib = contrib.head(top_n)
 
     total = contrib.sum()
@@ -23,80 +58,215 @@ def compute_contribution(df, level_col, kpi_col="amount", top_n=None):
         return {}
 
     percent = (contrib / total * 100).round(2).to_dict()
-    return percent
+    # ensure keys are str
+    return {str(k): float(v) for k, v in percent.items()}
 
 
+def compute_business_metrics(
+    df: pd.DataFrame,
+    year: str,       
+    month: int,      
+    version: str,    
+    scenario: str,   
+    date_col: str = "DATE",
+    year_col: str = "YEAR",
+    scenario_col: str = "SCENARIO",
+    amount_col: str = "Amount",
+    bucket_col: str = "account_L5_Description",
+) -> dict:
+    """
+    Returns metrics:
+    {
+      "Revenue": {
+         "selected_amount": ...,
+         "variance_percent_yoy": ...,
+         "contribution": {...}
+      },
+      "OPEX": {...},
+      "EBITDA": {...},
+      "meta": {...}
+    }
+    """
 
-def generate_business_summary(df, year, month, version="L6", scenario="Actual"):
+    df = prepare_dataframe(df, date_col=date_col)
+
+    # version -> which level column to use for contribution
     level_col = f"account_{version}_Description"
-    prev_year = f"FY{int(year.replace('FY','')) - 1}"
-
-    # VALIDATION
     if level_col not in df.columns:
-        raise ValueError(f"Column {level_col} not found in dataframe")
+        raise ValueError(f"Level column '{level_col}' not found in dataframe.")
 
-
-    df_selected = df[
-        (df["YEAR"] == year) &
-        (df["DATE"].dt.month == month) &
-        (df["SCENARIO"] == scenario)
-    ]
-
-    df_prev = df[
-        (df["YEAR"] == prev_year) &
-        (df["DATE"].dt.month == month) &
-        (df["SCENARIO"] == scenario)
-    ]
+    # previous FY (FY25 -> FY24)
+    try:
+        fy_int = int(year.replace("FY", ""))
+        prev_year = f"FY{fy_int - 1}"
+    except Exception:
+        raise ValueError(f"Year format must be like 'FY25'. Got: {year}")
 
  
-    rev_current = df_selected[df_selected[level_col]=="Revenue"]["amount"].sum()
-    opex_current = df_selected[df_selected[level_col]=="Operating Expenses"]["amount"].sum()
-    ebitda_current = rev_current - opex_current
+    mask_current = (
+        (df[year_col] == year)
+        & (df[date_col].dt.month == month)
+        & (df[scenario_col] == scenario)
+    )
+    mask_prev = (
+        (df[year_col] == prev_year)
+        & (df[date_col].dt.month == month)
+        & (df[scenario_col] == scenario)
+    )
 
-    rev_prev = df_prev[df_prev[level_col]=="Revenue"]["amount"].sum()
-    opex_prev = df_prev[df_prev[level_col]=="Operating Expenses"]["amount"].sum()
+    df_current = df[mask_current].copy()
+    df_prev = df[mask_prev].copy()
+
+    # L5 bucket names: 'Revenue' and 'Operating Expenses'
+    rev_curr = df_current[df_current[bucket_col] == "Revenue"][amount_col].sum()
+    opex_curr = df_current[df_current[bucket_col] == "Operating Expenses"][amount_col].sum()
+    ebitda_curr = rev_curr - opex_curr
+
+    rev_prev = df_prev[df_prev[bucket_col] == "Revenue"][amount_col].sum()
+    opex_prev = df_prev[df_prev[bucket_col] == "Operating Expenses"][amount_col].sum()
     ebitda_prev = rev_prev - opex_prev
 
- 
-    rev_yoy = compute_yoy_variance(rev_current, rev_prev)
-    opex_yoy = compute_yoy_variance(opex_current, opex_prev)
-    ebitda_yoy = compute_yoy_variance(ebitda_current, ebitda_prev)
+  
+    rev_yoy = compute_yoy_variance(rev_curr, rev_prev)
+    opex_yoy = compute_yoy_variance(opex_curr, opex_prev)
+    ebitda_yoy = compute_yoy_variance(ebitda_curr, ebitda_prev)
 
-    
-    rev_contrib = compute_contribution(
-        df_selected[df_selected[level_col]=="Revenue"], 
-        level_col="account_L6_Description" if version=="L6" else "account_L7_Description"
-    )
+  
+    df_rev_lvl = df_current[df_current[bucket_col] == "Revenue"]
+    rev_contrib = compute_contribution(df_rev_lvl, level_col=level_col, amount_col=amount_col, top_n=None)
 
-    opex_contrib = compute_contribution(
-        df_selected[df_selected[level_col]=="Operating Expenses"],
-        level_col="account_L6_Description" if version=="L6" else "account_L7_Description",
-        top_n=3
-    )
+    df_opex_lvl = df_current[df_current[bucket_col] == "Operating Expenses"]
+    opex_contrib = compute_contribution(df_opex_lvl, level_col=level_col, amount_col=amount_col, top_n=3)
 
-
-    summary = {
+    metrics = {
         "Revenue": {
-            "selected_amount": round(rev_current, 2),
+            "selected_amount": float(round(rev_curr, 2)),
             "variance_percent_yoy": rev_yoy,
-            "contribution": rev_contrib
+            "contribution": rev_contrib,
         },
         "OPEX": {
-            "selected_amount": round(opex_current, 2),
+            "selected_amount": float(round(opex_curr, 2)),
             "variance_percent_yoy": opex_yoy,
-            "contribution": opex_contrib
+            "contribution": opex_contrib,
         },
         "EBITDA": {
-            "selected_amount": round(ebitda_current, 2),
+            "selected_amount": float(round(ebitda_curr, 2)),
             "variance_percent_yoy": ebitda_yoy,
-            "contribution": None
-        }
+            "contribution": None,
+        },
+        "meta": {
+            "year": year,
+            "prev_year": prev_year,
+            "month": month,
+            "month_name": calendar.month_name[month],
+            "version": version,
+            "scenario": scenario,
+        },
     }
+
+    return metrics
+
+
+
+def generate_llm_business_summary(metrics: dict) -> dict:
+    """
+    Takes metrics dict and returns business summary as bullet points per KPI.
+
+    Output:
+    {
+      "Revenue": ["• ...", "• ..."],
+      "OPEX": ["• ..."],
+      "EBITDA": ["• ...", "• ..."]
+    }
+    """
+    meta = metrics.get("meta", {})
+    year = meta.get("year")
+    prev_year = meta.get("prev_year")
+    month_name = meta.get("month_name")
+    version = meta.get("version")
+    scenario = meta.get("scenario")
+
+    # Build a single prompt for all KPIs and ask model to return JSON
+    prompt = f"""
+You are a senior FP&A analyst.
+
+A dashboard user has selected:
+- Year: {year}
+- Month: {month_name}
+- Scenario: {scenario}
+- Version: {version} (hierarchy level)
+
+You are given this KPI data in JSON:
+{json.dumps(metrics, indent=2)}
+
+Task:
+For each of Revenue, OPEX, and EBITDA:
+- Write 2–3 very crisp, sophisticated FP&A business insight bullets.
+- Focus on:
+  - Current period amount
+  - YoY trend and variance %
+  - Key contribution heads (for Revenue and OPEX, ignore EBITDA contribution).
+- Avoid fluff; use phrases like "slightly above", "meaningfully below", "broadly in line".
+- Don't restate raw numbers too much; interpret them.
+- NO mention of JSON or code.
+
+Return STRICTLY a JSON object with this structure:
+{{
+  "Revenue": ["bullet1", "bullet2"],
+  "OPEX": ["bullet1", "bullet2"],
+  "EBITDA": ["bullet1", "bullet2"]
+}}
+No extra text, no explanation, only JSON.
+"""
+
+    response = client.chat.completions.create(
+        model=AZURE_DEPLOYMENT_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content
+
+    # Parse JSON from model output
+    try:
+        summary = json.loads(content)
+    except json.JSONDecodeError:
+        # Fallback: wrap raw text if model misbehaves
+        summary = {
+            "Revenue": [content],
+            "OPEX": [],
+            "EBITDA": [],
+        }
 
     return summary
 
 
 
+def generate_full_business_summary(
+    df: pd.DataFrame,
+    year: str,      # e.g. "FY25"
+    month: int,     # 1–12
+    version: str,   # "L6" or "L7"
+    scenario: str,  # "Actual", "Plan", etc.
+) -> dict:
+    """
+    Main function to call from backend when frontend filters change.
+
+    Returns:
+    {
+      "metrics": {...},    # numeric snapshot
+      "narrative": {...}   # GPT bullets per KPI
+    }
+    """
+    metrics = compute_business_metrics(
+        df=df,
+        year=year,
+        month=month,
+        version=version,
+        scenario=scenario,
+    )
+    narrative = generate_llm_business_summary(metrics)
+    return {"metrics": metrics, "narrative": narrative}
 
 
 
@@ -114,12 +284,25 @@ def generate_business_summary(df, year, month, version="L6", scenario="Actual"):
 
 
 
-summary = generate_business_summary(
-    df=df, 
-    year="FY25", 
-    month=5, 
-    version="L6",      # or "L7"
-    scenario="Actual"  # or "Plan"
+
+result = generate_full_business_summary(
+    df=df,
+    year="FY25",
+    month=5,          # May
+    version="L7",     # or "L6"
+    scenario="Actual" # or "Plan", "Forecast"
 )
 
-summary
+metrics = result["metrics"]
+narrative = result["narrative"]
+
+print("=== METRICS ===")
+print(json.dumps(metrics, indent=2))
+
+print("\n=== NARRATIVE (Revenue) ===")
+print(narrative["Revenue"])
+print("\n=== NARRATIVE (OPEX) ===")
+print(narrative["OPEX"])
+print("\n=== NARRATIVE (EBITDA) ===")
+print(narrative["EBITDA"])
+
