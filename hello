@@ -1,236 +1,99 @@
 import pandas as pd
-import json
-import calendar
-from typing import Dict, Any
+import numpy as np
 
 
-from llama_index.llms.azure_openai import AzureOpenAI
-from llama_index.core import Settings
-
-AZURE_OPENAI_API_KEY = "XXX"          # <- your key
-AZURE_OPENAI_ENDPOINT = "XXX"         # <- your endpoint
-AZURE_OPENAI_API_VERSION = "XXX"      # <- e.g. "2024-02-01"
-AZURE_DEPLOYMENT_NAME = "XXX"         # <- your deployment name (e.g. "gpt-4o-mini")
-
-llm = AzureOpenAI(
-    model="gpt-4o-mini",
-    deployment_name=AZURE_DEPLOYMENT_NAME,
-    api_key=AZURE_OPENAI_API_KEY,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_version=AZURE_OPENAI_API_VERSION,
-    max_tokens=900,
-    temperature=0.15,
-)
-
-Settings.llm = llm
-
-
-
-def _variance_pct(actual: float, plan: float):
-    if plan == 0:
+def compute_yoy_variance(current_value, prev_value):
+    if prev_value == 0 or pd.isna(prev_value):
         return None
-    return round((actual - plan) / plan * 100, 2)
+    return round(((current_value - prev_value) / prev_value) * 100, 2)
 
 
-def compute_kpi_snapshot(
-    df: pd.DataFrame,
-    fy: str,          # e.g. "FY25"
-    month: int,       # 1–12 (5 = May)
-    level: str = "L6",
-    date_col: str = "DATE",
-    year_col: str = "YEAR",
-    amount_col: str = "AMOUNT",
-    bucket_col: str = "account_L5_Description",
-    scenario_col: str = "SCENARIO",
-    level_map: Dict[str, str] = None,
-) -> Dict[str, Any]:
-    """
-    Compute snapshot for a given FY + month and level (L6/L7).
 
-    Returns dict:
-    {
-      "Revenue": {
-          "actual_amount": ...,
-          "plan_amount": ...,
-          "variance_percent": ...,
-          "level_contribution_percent": {head: %, ...}
-      },
-      "OPEX": {...},
-      "EBITDA": {...},
-      "meta": {...}
-    }
-    """
+def compute_contribution(df, level_col, kpi_col="amount", top_n=None):
+    contrib = (
+        df.groupby(level_col)[kpi_col].sum()
+          .sort_values(ascending=False)
+    )
 
-    if level_map is None:
-        level_map = {
-            "L6": "account_L6_Description",
-            "L7": "account_L7_Description",
-        }
-    if level not in level_map:
-        raise ValueError("level must be 'L6' or 'L7'")
+    if top_n:  
+        contrib = contrib.head(top_n)
 
-    level_col = level_map[level]
+    total = contrib.sum()
+    if total == 0:
+        return {}
 
-    df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
-    df[level_col] = df[level_col].astype(str).str.strip()
-    df[year_col] = df[year_col].astype(str).str.strip()
+    percent = (contrib / total * 100).round(2).to_dict()
+    return percent
 
-    # -------- filter FY + month --------
-    mask = (df[year_col] == fy) & (df[date_col].dt.month == month)
-    df_month = df[mask]
 
-    df_actual = df_month[df_month[scenario_col] == "Actual"].copy()
-    df_plan   = df_month[df_month[scenario_col] == "Plan"].copy()
 
-    def kpi_sum(sub_df, bucket_value):
-        return float(sub_df[sub_df[bucket_col] == bucket_value][amount_col].sum())
+def generate_business_summary(df, year, month, version="L6", scenario="Actual"):
+    level_col = f"account_{version}_Description"
+    prev_year = f"FY{int(year.replace('FY','')) - 1}"
 
-    # -------- Revenue & OPEX actual / plan --------
-    rev_actual = kpi_sum(df_actual, "Revenue")
-    rev_plan   = kpi_sum(df_plan, "Revenue")
+    # VALIDATION
+    if level_col not in df.columns:
+        raise ValueError(f"Column {level_col} not found in dataframe")
 
-    opex_actual = kpi_sum(df_actual, "Operating Expenses")
-    opex_plan   = kpi_sum(df_plan, "Operating Expenses")
 
-    # EBITDA derived
-    ebitda_actual = rev_actual - opex_actual
-    ebitda_plan   = rev_plan - opex_plan
+    df_selected = df[
+        (df["YEAR"] == year) &
+        (df["DATE"].dt.month == month) &
+        (df["SCENARIO"] == scenario)
+    ]
 
-    # -------- L6/L7 contribution: Revenue (all heads) --------
-    rev_l6_contrib = {}
-    if rev_actual != 0:
-        rev_l6 = (
-            df_actual[df_actual[bucket_col] == "Revenue"]
-            .groupby(level_col)[amount_col].sum().reset_index()
-        )
-        rev_l6["contrib_pct"] = rev_l6[amount_col] / rev_actual * 100
-        for _, row in rev_l6.iterrows():
-            rev_l6_contrib[str(row[level_col])] = round(row["contrib_pct"], 2)
+    df_prev = df[
+        (df["YEAR"] == prev_year) &
+        (df["DATE"].dt.month == month) &
+        (df["SCENARIO"] == scenario)
+    ]
 
-    # -------- L6/L7 contribution: OPEX (top 3 heads) --------
-    opex_l6_contrib = {}
-    if opex_actual != 0:
-        opex_l6 = (
-            df_actual[df_actual[bucket_col] == "Operating Expenses"]
-            .groupby(level_col)[amount_col].sum().reset_index()
-        )
-        opex_l6 = opex_l6.sort_values(amount_col, ascending=False)
-        opex_l6["contrib_pct"] = opex_l6[amount_col] / opex_actual * 100
-        opex_l6_top3 = opex_l6.head(3)
-        for _, row in opex_l6_top3.iterrows():
-            opex_l6_contrib[str(row[level_col])] = round(row["contrib_pct"], 2)
+ 
+    rev_current = df_selected[df_selected[level_col]=="Revenue"]["amount"].sum()
+    opex_current = df_selected[df_selected[level_col]=="Operating Expenses"]["amount"].sum()
+    ebitda_current = rev_current - opex_current
 
-    snapshot = {
+    rev_prev = df_prev[df_prev[level_col]=="Revenue"]["amount"].sum()
+    opex_prev = df_prev[df_prev[level_col]=="Operating Expenses"]["amount"].sum()
+    ebitda_prev = rev_prev - opex_prev
+
+ 
+    rev_yoy = compute_yoy_variance(rev_current, rev_prev)
+    opex_yoy = compute_yoy_variance(opex_current, opex_prev)
+    ebitda_yoy = compute_yoy_variance(ebitda_current, ebitda_prev)
+
+    
+    rev_contrib = compute_contribution(
+        df_selected[df_selected[level_col]=="Revenue"], 
+        level_col="account_L6_Description" if version=="L6" else "account_L7_Description"
+    )
+
+    opex_contrib = compute_contribution(
+        df_selected[df_selected[level_col]=="Operating Expenses"],
+        level_col="account_L6_Description" if version=="L6" else "account_L7_Description",
+        top_n=3
+    )
+
+
+    summary = {
         "Revenue": {
-            "actual_amount": rev_actual,
-            "plan_amount": rev_plan,
-            "variance_percent": _variance_pct(rev_actual, rev_plan),
-            "level_contribution_percent": rev_l6_contrib,
+            "selected_amount": round(rev_current, 2),
+            "variance_percent_yoy": rev_yoy,
+            "contribution": rev_contrib
         },
         "OPEX": {
-            "actual_amount": opex_actual,
-            "plan_amount": opex_plan,
-            "variance_percent": _variance_pct(opex_actual, opex_plan),
-            "level_contribution_percent": opex_l6_contrib,
+            "selected_amount": round(opex_current, 2),
+            "variance_percent_yoy": opex_yoy,
+            "contribution": opex_contrib
         },
         "EBITDA": {
-            "actual_amount": ebitda_actual,
-            "plan_amount": ebitda_plan,
-            "variance_percent": _variance_pct(ebitda_actual, ebitda_plan),
-            "level_contribution_percent": None,
-        },
-        "meta": {
-            "fy": fy,
-            "month": month,
-            "month_name": calendar.month_name[month],
-            "level_used": level,
-        },
+            "selected_amount": round(ebitda_current, 2),
+            "variance_percent_yoy": ebitda_yoy,
+            "contribution": None
+        }
     }
 
-    return snapshot
-
-
-
-def _build_llm_prompt(category: str, data: Dict[str, Any], meta: Dict[str, Any]) -> str:
-    """
-    Build a very crisp FP&A-style prompt for one category (Revenue / OPEX / EBITDA).
-    """
-    # we embed structured data as JSON string
-    data_str = json.dumps(data, indent=2)
-    month_name = meta.get("month_name")
-    fy = meta.get("fy")
-    level_used = meta.get("level_used")
-
-    prompt = (
-        "You are a senior FP&A leader writing a concise dashboard commentary.\n\n"
-        f"Context:\n"
-        f"- Category: {category}\n"
-        f"- Period: {month_name} {fy}\n"
-        f"- Level of breakdown used: {level_used}\n\n"
-        "You are given structured KPI data as JSON:\n"
-        f"{data_str}\n\n"
-        "Fields meaning:\n"
-        "- actual_amount: actual for the period\n"
-        "- plan_amount: plan for the period\n"
-        "- variance_percent: (actual - plan) / plan * 100\n"
-        "- level_contribution_percent: contribution of each L6/L7 head to total (if available)\n\n"
-        "Write 2–3 extremely crisp bullet points (max ~18 words each) in polished, board-ready FP&A language.\n"
-        "- Comment on actual vs plan, direction and magnitude qualitatively (slightly / meaningfully / materially).\n"
-        "- Use the level_contribution_percent to call out key drivers (largest contributors only).\n"
-        "- Do NOT mention other categories (e.g., while doing Revenue, don't mention OPEX or EBITDA).\n"
-        "- No JSON, no code. Output only bullets starting with '• '.\n"
-    )
-    return prompt
-
-
-def generate_narrative_from_snapshot(snapshot: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Takes the snapshot dict and returns a dict of narratives:
-    {
-      "Revenue": "• ...\n• ...",
-      "OPEX": "• ...\n• ...",
-      "EBITDA": "• ...\n• ..."
-    }
-    """
-    meta = snapshot.get("meta", {})
-    narratives = {}
-
-    for category_key in ["Revenue", "OPEX", "EBITDA"]:
-        cat_data = snapshot.get(category_key, {})
-        prompt = _build_llm_prompt(category_key, cat_data, meta)
-        response = llm.complete(prompt)
-        narratives[category_key] = response.text.strip()
-
-    return narratives
-
-
-
-def generate_kpi_and_narrative(
-    df: pd.DataFrame,
-    fy: str,
-    month: int,
-    level: str = "L6"
-) -> Dict[str, Any]:
-    """
-    Master function:
-    - computes KPI snapshot
-    - generates FP&A business narrative via LLM
-    Returns:
-    {
-      "snapshot": {...},
-      "narrative": {...}
-    }
-    """
-    snapshot = compute_kpi_snapshot(df, fy=fy, month=month, level=level)
-    narrative = generate_narrative_from_snapshot(snapshot)
-    return {"snapshot": snapshot, "narrative": narrative}
-
-
-
-#def save_result_to_json(result: Dict[str, Any], path: str = "kpi_summary_with_narrative.json"):
-    #with open(path, "w", encoding="utf-8") as f:
-        #json.dump(result, f, ensure_ascii=False, indent=2)
+    return summary
 
 
 
@@ -246,24 +109,17 @@ def generate_kpi_and_narrative(
 
 
 
-result = generate_kpi_and_narrative(
-    df,
-    fy="FY25",
-    month=5,       # May
-    level="L6"     # or "L7"
+
+
+
+
+
+summary = generate_business_summary(
+    df=df, 
+    year="FY25", 
+    month=5, 
+    version="L6",      # or "L7"
+    scenario="Actual"  # or "Plan"
 )
 
-snapshot = result["snapshot"]
-narrative = result["narrative"]
-
-from pprint import pprint
-
-print("=== SNAPSHOT ===")
-pprint(snapshot)
-
-print("\n=== NARRATIVE: Revenue ===")
-print(narrative["Revenue"])
-print("\n=== NARRATIVE: OPEX ===")
-print(narrative["OPEX"])
-print("\n=== NARRATIVE: EBITDA ===")
-print(narrative["EBITDA"])
+summary
