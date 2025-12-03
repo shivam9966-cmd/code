@@ -1,199 +1,31 @@
-import pandas as pd
-import json
-import calendar
-from typing import Optional
-from openai import AzureOpenAI
-
-# ---- Azure OpenAI Setup ----
-AZURE_OPENAI_ENDPOINT = "https://YOUR-ENDPOINT.openai.azure.com"
-AZURE_OPENAI_API_KEY = "YOUR_API_KEY"
-AZURE_OPENAI_API_VERSION = "2024-02-15-preview"
-AZURE_DEPLOYMENT_NAME = "YOUR_MODEL_NAME"
-
-client = AzureOpenAI(
-    api_key=AZURE_OPENAI_API_KEY,
-    api_version=AZURE_OPENAI_API_VERSION,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-)
-
-# ---- Convert month names to numbers ----
-MONTH_MAP = {
-    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
-    "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
-    "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
-}
-
-
-def prepare_dataframe(df):
-    df = df.copy()
-    if "PERIOD" not in df.columns:
-        raise ValueError("Expected a column named 'PERIOD' with month names like Jan, Feb, etc.")
-
-    df["PERIOD_NUM"] = df["PERIOD"].map(MONTH_MAP)
-    return df
-
-
-def yoy_variance(curr, prev):
-    if prev == 0 or pd.isna(prev):
-        return None
-    return round(((curr - prev) / prev) * 100, 2)
-
-
-def contribution(df, level_col, amount_col="Amount", top_n: Optional[int] = None):
-    if df.empty:
-        return {}
-
-    group = df.groupby(level_col)[amount_col].sum().sort_values(ascending=False)
-    if top_n:
-        group = group.head(top_n)
-
-    total = group.sum()
-    if total == 0:
-        return {}
-
-    return {str(k): round(v / total * 100, 2) for k, v in group.items()}
-
-
-def compute_business_metrics(df, year, month, version, scenario):
-    df = prepare_dataframe(df)
-
-    level_col = f"account_{version}_Description"
-    if level_col not in df.columns:
-        raise ValueError(f"{level_col} not found in data")
-
-    fy_num = int(year.replace("FY", ""))
-    prev_year = f"FY{fy_num - 1}"
-
-    df_curr = df[(df["YEAR"] == year) & (df["PERIOD_NUM"] == month) & (df["SCENARIO"] == scenario)]
-    df_prev = df[(df["YEAR"] == prev_year) & (df["PERIOD_NUM"] == month) & (df["SCENARIO"] == scenario)]
-
-    rev_curr = df_curr[df_curr["account_L5_Description"] == "Revenue"]["Amount"].sum()
-    opex_curr = df_curr[df_curr["account_L5_Description"] == "Operating Expenses"]["Amount"].sum()
-    ebitda_curr = rev_curr - opex_curr
-
-    rev_prev = df_prev[df_prev["account_L5_Description"] == "Revenue"]["Amount"].sum()
-    opex_prev = df_prev[df_prev["account_L5_Description"] == "Operating Expenses"]["Amount"].sum()
-    ebitda_prev = rev_prev - opex_prev
-
-    rev_yoy = yoy_variance(rev_curr, rev_prev)
-    opex_yoy = yoy_variance(opex_curr, opex_prev)
-    ebitda_yoy = yoy_variance(ebitda_curr, ebitda_prev)
-
-    rev_contrib = contribution(df_curr[df_curr["account_L5_Description"] == "Revenue"], level_col)
-    opex_contrib = contribution(df_curr[df_curr["account_L5_Description"] == "Operating Expenses"], level_col, top_n=3)
-
-    return {
-        "Revenue": {
-            "selected_amount": round(rev_curr, 2),
-            "variance_percent_yoy": rev_yoy,
-            "contribution": rev_contrib
-        },
-        "OPEX": {
-            "selected_amount": round(opex_curr, 2),
-            "variance_percent_yoy": opex_yoy,
-            "contribution": opex_contrib
-        },
-        "EBITDA": {
-            "selected_amount": round(ebitda_curr, 2),
-            "variance_percent_yoy": ebitda_yoy,
-            "contribution": None
-        },
-        "meta": {
-            "year": year,
-            "prev_year": prev_year,
-            "month": month,
-            "month_name": calendar.month_name[month],
-            "version": version,
-            "scenario": scenario
-        }
-    }
-
-
-def generate_llm_business_summary(metrics):
-    prompt = f"""
-Provide crisp FP&A insights based on this JSON:
-
-{json.dumps(metrics, indent=2)}
-
-For each KPI (Revenue, OPEX, EBITDA), give 2–3 sharp bullets:
-- interpret YoY movement
-- highlight contribution drivers (Revenue/OPEX)
-- keep execution-grade tone
-- avoid wordy sentences
-
-Return strictly:
-{{
- "Revenue": ["..."],
- "OPEX": ["..."],
- "EBITDA": ["..."]
-}}
-"""
-
-    resp = client.chat.completions.create(
-        model=AZURE_DEPLOYMENT_NAME,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-    )
-
-    try:
-        return json.loads(resp.choices[0].message.content)
-    except:
-        return {"Revenue": [], "OPEX": [], "EBITDA": []}
-
-
-def generate_full_business_summary(df, year, month, version, scenario):
-    metrics = compute_business_metrics(df, year, month, version, scenario)
-    narrative = generate_llm_business_summary(metrics)
-    return {"metrics": metrics, "narrative": narrative}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 from fastapi import FastAPI
 from pydantic import BaseModel
 import pandas as pd
 from business_summary_engine import generate_full_business_summary
 
+# Create the FastAPI app
 app = FastAPI()
 
-df = pd.read_csv("your_file.csv")
+# Load your dataset once when the server starts
+df = pd.read_csv("kpi_data_smallcasecols_copy.csv")
 
+
+# The frontend will send these 4 filters in a JSON request
 class FilterRequest(BaseModel):
-    year: str
-    month: int
-    version: str
-    scenario: str
+    year: str       # e.g., "FY25"
+    month: int      # 1-12
+    version: str    # "L6" or "L7"
+    scenario: str   # "Actual", "Plan", etc.
 
+
+# Endpoint: POST /business-summary
 @app.post("/business-summary")
 def business_summary(filters: FilterRequest):
-    return generate_full_business_summary(
-        df,
+    result = generate_full_business_summary(
+        df=df,
         year=filters.year,
         month=filters.month,
         version=filters.version,
         scenario=filters.scenario
     )
+    return result
