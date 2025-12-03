@@ -1,14 +1,16 @@
 import pandas as pd
-import numpy as np
 import json
 import calendar
+from typing import Optional
 from openai import AzureOpenAI
 
-
+# ============================================================================
+# 1. AZURE OPENAI CLIENT (FILL THESE 4 VALUES)
+# ============================================================================
 AZURE_OPENAI_ENDPOINT = "https://YOUR-RESOURCE-NAME.openai.azure.com"
 AZURE_OPENAI_API_KEY = "YOUR_API_KEY"
-AZURE_OPENAI_API_VERSION = "2024-02-15-preview"  
-AZURE_DEPLOYMENT_NAME = "YOUR_DEPLOYMENT_NAME"   
+AZURE_OPENAI_API_VERSION = "2024-02-15-preview"  # example
+AZURE_DEPLOYMENT_NAME = "YOUR_DEPLOYMENT_NAME"   # e.g. "gpt-4o-mini"
 
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_API_KEY,
@@ -16,19 +18,29 @@ client = AzureOpenAI(
     azure_endpoint=AZURE_OPENAI_ENDPOINT,
 )
 
-
+# ============================================================================
+# 2. DATA PREP HELPERS
+# ============================================================================
 
 def prepare_dataframe(df: pd.DataFrame, date_col: str = "DATE") -> pd.DataFrame:
-    """Ensure DATE is datetime."""
+    """
+    Ensure DATE is datetime-like so .dt works.
+    """
     df = df.copy()
     if date_col not in df.columns:
-        raise ValueError(f"Expected date column '{date_col}' not found in dataframe.")
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        raise ValueError(f"Expected date column '{date_col}' not found in dataframe. Columns: {df.columns.tolist()}")
+
+    # Only convert if not already datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
     return df
 
 
-def compute_yoy_variance(current_value: float, prev_value: float):
-    """YoY % = (current - prev) / prev * 100."""
+def compute_yoy_variance(current_value: float, prev_value: float) -> Optional[float]:
+    """
+    YoY % = (current - prev) / prev * 100.
+    """
     if prev_value == 0 or pd.isna(prev_value):
         return None
     return round(((current_value - prev_value) / prev_value) * 100, 2)
@@ -38,9 +50,12 @@ def compute_contribution(
     df: pd.DataFrame,
     level_col: str,
     amount_col: str = "Amount",
-    top_n: int | None = None,
-):
-    """Compute contribution % by level_col, optionally top_n."""
+    top_n: Optional[int] = None,
+) -> dict:
+    """
+    Compute contribution % by level_col, optionally top_n.
+    Returns dict: {level_value: percentage}
+    """
     if df.empty:
         return {}
 
@@ -50,7 +65,7 @@ def compute_contribution(
         .sort_values(ascending=False)
     )
 
-    if top_n:
+    if top_n is not None:
         contrib = contrib.head(top_n)
 
     total = contrib.sum()
@@ -58,16 +73,19 @@ def compute_contribution(
         return {}
 
     percent = (contrib / total * 100).round(2).to_dict()
-    # ensure keys are str
+    # ensure keys are str, values are float
     return {str(k): float(v) for k, v in percent.items()}
 
+# ============================================================================
+# 3. CORE BUSINESS METRICS LOGIC
+# ============================================================================
 
 def compute_business_metrics(
     df: pd.DataFrame,
-    year: str,       
-    month: int,      
-    version: str,    
-    scenario: str,   
+    year: str,       # e.g. "FY25"
+    month: int,      # 1-12
+    version: str,    # "L6" or "L7"
+    scenario: str,   # "Actual", "Plan", etc.
     date_col: str = "DATE",
     year_col: str = "YEAR",
     scenario_col: str = "SCENARIO",
@@ -77,11 +95,7 @@ def compute_business_metrics(
     """
     Returns metrics:
     {
-      "Revenue": {
-         "selected_amount": ...,
-         "variance_percent_yoy": ...,
-         "contribution": {...}
-      },
+      "Revenue": {...},
       "OPEX": {...},
       "EBITDA": {...},
       "meta": {...}
@@ -90,19 +104,21 @@ def compute_business_metrics(
 
     df = prepare_dataframe(df, date_col=date_col)
 
-    # version -> which level column to use for contribution
+    # which level column we use for contribution
     level_col = f"account_{version}_Description"
     if level_col not in df.columns:
-        raise ValueError(f"Level column '{level_col}' not found in dataframe.")
+        raise ValueError(f"Level column '{level_col}' not found in dataframe. Columns: {df.columns.tolist()}")
 
-    # previous FY (FY25 -> FY24)
+    # derive previous FY: "FY25" -> "FY24"
     try:
         fy_int = int(year.replace("FY", ""))
         prev_year = f"FY{fy_int - 1}"
     except Exception:
         raise ValueError(f"Year format must be like 'FY25'. Got: {year}")
 
- 
+    # ------------------------
+    # FILTER CURRENT + PREVIOUS YEAR, SAME SCENARIO
+    # ------------------------
     mask_current = (
         (df[year_col] == year)
         & (df[date_col].dt.month == month)
@@ -117,7 +133,9 @@ def compute_business_metrics(
     df_current = df[mask_current].copy()
     df_prev = df[mask_prev].copy()
 
-    # L5 bucket names: 'Revenue' and 'Operating Expenses'
+    # ------------------------
+    # KPI AMOUNTS (L5 bucket: Revenue / Operating Expenses)
+    # ------------------------
     rev_curr = df_current[df_current[bucket_col] == "Revenue"][amount_col].sum()
     opex_curr = df_current[df_current[bucket_col] == "Operating Expenses"][amount_col].sum()
     ebitda_curr = rev_curr - opex_curr
@@ -126,17 +144,33 @@ def compute_business_metrics(
     opex_prev = df_prev[df_prev[bucket_col] == "Operating Expenses"][amount_col].sum()
     ebitda_prev = rev_prev - opex_prev
 
-  
+    # ------------------------
+    # YoY VARIANCE %
+    # ------------------------
     rev_yoy = compute_yoy_variance(rev_curr, rev_prev)
     opex_yoy = compute_yoy_variance(opex_curr, opex_prev)
     ebitda_yoy = compute_yoy_variance(ebitda_curr, ebitda_prev)
 
-  
+    # ------------------------
+    # CONTRIBUTIONS (by L6 or L7)
+    # ------------------------
+    # Revenue → ALL heads
     df_rev_lvl = df_current[df_current[bucket_col] == "Revenue"]
-    rev_contrib = compute_contribution(df_rev_lvl, level_col=level_col, amount_col=amount_col, top_n=None)
+    rev_contrib = compute_contribution(
+        df_rev_lvl,
+        level_col=level_col,
+        amount_col=amount_col,
+        top_n=None
+    )
 
+    # OPEX → TOP 3 heads
     df_opex_lvl = df_current[df_current[bucket_col] == "Operating Expenses"]
-    opex_contrib = compute_contribution(df_opex_lvl, level_col=level_col, amount_col=amount_col, top_n=3)
+    opex_contrib = compute_contribution(
+        df_opex_lvl,
+        level_col=level_col,
+        amount_col=amount_col,
+        top_n=3
+    )
 
     metrics = {
         "Revenue": {
@@ -166,11 +200,13 @@ def compute_business_metrics(
 
     return metrics
 
-
+# ============================================================================
+# 4. GPT BUSINESS SUMMARY (PER KPI, BULLET POINTS)
+# ============================================================================
 
 def generate_llm_business_summary(metrics: dict) -> dict:
     """
-    Takes metrics dict and returns business summary as bullet points per KPI.
+    Takes metrics dict and returns business summary bullets per KPI.
 
     Output:
     {
@@ -186,37 +222,37 @@ def generate_llm_business_summary(metrics: dict) -> dict:
     version = meta.get("version")
     scenario = meta.get("scenario")
 
-    # Build a single prompt for all KPIs and ask model to return JSON
     prompt = f"""
 You are a senior FP&A analyst.
 
-A dashboard user has selected:
+Dashboard filters:
 - Year: {year}
+- Previous year: {prev_year}
 - Month: {month_name}
 - Scenario: {scenario}
-- Version: {version} (hierarchy level)
+- Version (hierarchy level): {version}
 
-You are given this KPI data in JSON:
+KPI metrics JSON:
 {json.dumps(metrics, indent=2)}
 
-Task:
 For each of Revenue, OPEX, and EBITDA:
-- Write 2–3 very crisp, sophisticated FP&A business insight bullets.
+- Write 2–3 very crisp FP&A business insight bullets.
 - Focus on:
-  - Current period amount
-  - YoY trend and variance %
-  - Key contribution heads (for Revenue and OPEX, ignore EBITDA contribution).
-- Avoid fluff; use phrases like "slightly above", "meaningfully below", "broadly in line".
-- Don't restate raw numbers too much; interpret them.
-- NO mention of JSON or code.
+  - Current period amount (selected_amount)
+  - YoY variance_percent_yoy (direction: above, below, in line)
+  - Key contribution heads (for Revenue & OPEX from 'contribution').
+- Do NOT mention other KPIs inside a section (Revenue section shouldn’t talk about OPEX).
+- Tone: concise, board-ready, no fluff.
+- Avoid restating raw numbers too much; summarize trends and drivers.
+- Output bullets as plain text starting with "• ".
 
-Return STRICTLY a JSON object with this structure:
+Return STRICTLY a JSON in this structure:
 {{
   "Revenue": ["bullet1", "bullet2"],
   "OPEX": ["bullet1", "bullet2"],
   "EBITDA": ["bullet1", "bullet2"]
 }}
-No extra text, no explanation, only JSON.
+No other text.
 """
 
     response = client.chat.completions.create(
@@ -227,11 +263,10 @@ No extra text, no explanation, only JSON.
 
     content = response.choices[0].message.content
 
-    # Parse JSON from model output
     try:
         summary = json.loads(content)
     except json.JSONDecodeError:
-        # Fallback: wrap raw text if model misbehaves
+        # if model returns something messy, fall back to raw text
         summary = {
             "Revenue": [content],
             "OPEX": [],
@@ -240,7 +275,9 @@ No extra text, no explanation, only JSON.
 
     return summary
 
-
+# ============================================================================
+# 5. MASTER FUNCTION: WHAT YOU CALL FROM BACKEND WHEN FILTERS CHANGE
+# ============================================================================
 
 def generate_full_business_summary(
     df: pd.DataFrame,
@@ -250,7 +287,7 @@ def generate_full_business_summary(
     scenario: str,  # "Actual", "Plan", etc.
 ) -> dict:
     """
-    Main function to call from backend when frontend filters change.
+    Main function to call when user changes filters in frontend.
 
     Returns:
     {
@@ -281,28 +318,6 @@ def generate_full_business_summary(
 
 
 
-
-
-
-
-result = generate_full_business_summary(
-    df=df,
-    year="FY25",
-    month=5,          # May
-    version="L7",     # or "L6"
-    scenario="Actual" # or "Plan", "Forecast"
-)
-
-metrics = result["metrics"]
-narrative = result["narrative"]
-
-print("=== METRICS ===")
-print(json.dumps(metrics, indent=2))
-
-print("\n=== NARRATIVE (Revenue) ===")
-print(narrative["Revenue"])
-print("\n=== NARRATIVE (OPEX) ===")
-print(narrative["OPEX"])
-print("\n=== NARRATIVE (EBITDA) ===")
-print(narrative["EBITDA"])
+print(df["DATE"].head())
+print(df["DATE"].dtype)
 
