@@ -1,38 +1,7 @@
-import sys
-import os
-from fastapi import FastAPI
-from pydantic import BaseModel
-import pandas as pd
+C:\Users\Aggarwal, Ashi\projects\FIS\Front end
 
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from business_summary_engine import generate_full_business_summary
+cd "C:\Users\Aggarwal, Ashi\projects\FIS\Front end"
 
 
 
-df = pd.read_csv("granular_subset_single.csv")
-
-
-
-class FilterRequest(BaseModel):
-    year: str       
-    month: int     
-    version: str    
-    scenario: str   
-
-
-
-app = FastAPI()
-
-
-@app.post("/business-summary")
-def business_summary(filters: FilterRequest):
-    summary = generate_full_business_summary(
-        df=df,
-        year=filters.year,
-        month=filters.month,
-        version=filters.version,
-        scenario=filters.scenario
-    )
-    return summary
