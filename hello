@@ -1,7 +1,159 @@
-C:\Users\Aggarwal, Ashi\projects\FIS\Front end
+import pandas as pd
+import calendar
+import json
+from typing import Optional
+from openai import AzureOpenAI
+
+AZURE_OPENAI_ENDPOINT = "https://xxxx.openai.azure.com/"
+AZURE_OPENAI_API_KEY = "xxxx"
+AZURE_OPENAI_API_VERSION = "2024-02-01-preview"
+AZURE_DEPLOYMENT_NAME = "gpt-4o-mini"
+
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version=AZURE_OPENAI_API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT
+)
 
 
-cd "C:\Users\Aggarwal, Ashi\projects\FIS\Front end"
+MONTH_MAP = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
+    "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
+    "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
+}
 
 
+def prepare_dataframe(df):
+    df = df.copy()
+    if "PERIOD" not in df.columns:
+        raise ValueError("Missing PERIOD column with month names like Jan, Feb")
 
+    df["PERIOD_NUM"] = df["PERIOD"].map(MONTH_MAP)
+    return df
+
+def yoy_variance(curr, prev):
+    if prev == 0 or pd.isna(prev):
+        return None
+    return round(((curr - prev) / prev) * 100, 2)
+
+
+def contribution(df, top_n=None):
+    if df.empty:
+        return {}
+
+    group = df.groupby("account_L6_Description")["Amount"].sum().sort_values(ascending=False)
+
+    if top_n:
+        group = group.head(top_n)
+
+    total = group.sum()
+    if total == 0:
+        return {}
+
+    return {k: round((v / total) * 100, 2) for k, v in group.items()}
+
+
+def compute_business_metrics(df, year, month, version, scenario):
+
+    df = prepare_dataframe(df)
+
+    # Filter current period
+    df_curr = df[
+        (df["YEAR"] == year) &
+        (df["PERIOD_NUM"] == month) &
+        (df["VERSION"] == version) &
+        (df["SCENARIO"] == scenario)
+    ]
+
+    # Previous year logic
+    prev_year = f"FY{int(year.replace('FY', '')) - 1}"
+
+    df_prev = df[
+        (df["YEAR"] == prev_year) &
+        (df["PERIOD_NUM"] == month) &
+        (df["VERSION"] == version) &
+        (df["SCENARIO"] == scenario)
+    ]
+
+    # ---- Revenue (L5) ----
+    rev_curr = df_curr[df_curr["account_L5_Description"] == "Revenue"]["Amount"].sum()
+    rev_prev = df_prev[df_prev["account_L5_Description"] == "Revenue"]["Amount"].sum()
+    rev_yoy = yoy_variance(rev_curr, rev_prev)
+    rev_contrib = contribution(df_curr[df_curr["account_L5_Description"] == "Revenue"], top_n=None)
+
+    # ---- OPEX (L5) ----
+    opex_curr = df_curr[df_curr["account_L5_Description"] == "Operating Expenses"]["Amount"].sum()
+    opex_prev = df_prev[df_prev["account_L5_Description"] == "Operating Expenses"]["Amount"].sum()
+    opex_yoy = yoy_variance(opex_curr, opex_prev)
+    opex_contrib = contribution(df_curr[df_curr["account_L5_Description"] == "Operating Expenses"], top_n=3)
+
+    # ---- EBITDA ----
+    ebitda_curr = rev_curr - opex_curr
+    ebitda_prev = rev_prev - opex_prev
+    ebitda_yoy = yoy_variance(ebitda_curr, ebitda_prev)
+
+    return {
+        "Revenue": {
+            "selected_amount": round(rev_curr, 2),
+            "variance_percent_yoy": rev_yoy,
+            "contribution": rev_contrib
+        },
+        "OPEX": {
+            "selected_amount": round(opex_curr, 2),
+            "variance_percent_yoy": opex_yoy,
+            "contribution": opex_contrib
+        },
+        "EBITDA": {
+            "selected_amount": round(ebitda_curr, 2),
+            "variance_percent_yoy": ebitda_yoy,
+            "contribution": None
+        },
+        "meta": {
+            "year": year,
+            "prev_year": prev_year,
+            "month": month,
+            "month_name": calendar.month_name[month],
+            "version": version,
+            "scenario": scenario
+        }
+    }
+
+
+def generate_llm_business_summary(metrics):
+    prompt = f"""
+You are an FP&A analyst. Create a crisp monthly business summary for Revenue, OPEX, and EBITDA.
+
+Use ONLY this JSON:
+{json.dumps(metrics, indent=2)}
+
+Rules:
+- Keep bullets very sharp (<18 words).
+- Include 📈📉 for YoY movements.
+- Mention L6 drivers for Revenue/OPEX.
+- Do NOT show contribution for EBITDA.
+- Keep tone consultant-grade.
+
+Return JSON:
+{{
+  "Revenue": [...],
+  "OPEX": [...],
+  "EBITDA": [...]
+}}
+"""
+
+    response = client.chat.completions.create(
+        model=AZURE_DEPLOYMENT_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3
+    )
+
+    try:
+        return json.loads(response.choices[0].message.content)
+    except:
+        return {"Revenue": [], "OPEX": [], "EBITDA": []}
+
+
+def generate_full_business_summary(df, year, month, version, scenario):
+    metrics = compute_business_metrics(df, year, month, version, scenario)
+    narrative = generate_llm_business_summary(metrics)
+    return {"metrics": metrics, "narrative": narrative}
