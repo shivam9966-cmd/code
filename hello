@@ -1,18 +1,19 @@
 import pandas as pd
-import calendar
 import json
+import calendar
 from typing import Optional
 from openai import AzureOpenAI
 
-AZURE_OPENAI_ENDPOINT = "https://xxxx.openai.azure.com/"
-AZURE_OPENAI_API_KEY = "xxxx"
-AZURE_OPENAI_API_VERSION = "2024-02-01-preview"
+
+AZURE_OPENAI_ENDPOINT = "https://AIHUB-TRAINING-OAISVC.openai.azure.com/"
+AZURE_OPENAI_API_KEY = "YOUR_KEY"
+AZURE_OPENAI_API_VERSION = "2024-12-01-preview"
 AZURE_DEPLOYMENT_NAME = "gpt-4o-mini"
 
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_API_KEY,
     api_version=AZURE_OPENAI_API_VERSION,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
 )
 
 
@@ -23,13 +24,26 @@ MONTH_MAP = {
 }
 
 
+
 def prepare_dataframe(df):
     df = df.copy()
-    if "PERIOD" not in df.columns:
-        raise ValueError("Missing PERIOD column with month names like Jan, Feb")
 
+    # Clean descriptions (remove spaces + proper case)
+    df["account_L5_Description"] = (
+        df["account_L5_Description"].astype(str).str.strip().str.title()
+    )
+    df["account_L6_Description"] = df["account_L6_Description"].astype(str).str.strip()
+
+    df["SCENARIO"] = df["SCENARIO"].astype(str).str.strip().str.title()
+    df["VERSION"] = df["VERSION"].astype(str).str.strip().str.title()
+
+    # Convert PERIOD to numeric month
+    df["PERIOD"] = df["PERIOD"].astype(str).str.strip().str.title()
     df["PERIOD_NUM"] = df["PERIOD"].map(MONTH_MAP)
+
     return df
+
+
 
 def yoy_variance(curr, prev):
     if prev == 0 or pd.isna(prev):
@@ -37,76 +51,90 @@ def yoy_variance(curr, prev):
     return round(((curr - prev) / prev) * 100, 2)
 
 
-def contribution(df, top_n=None):
+
+def contribution(df, level_col: str, top_n: Optional[int] = None):
     if df.empty:
         return {}
 
-    group = df.groupby("account_L6_Description")["Amount"].sum().sort_values(ascending=False)
+    grouped = df.groupby(level_col)["Amount"].sum().sort_values(ascending=False)
 
     if top_n:
-        group = group.head(top_n)
+        grouped = grouped.head(top_n)
 
-    total = group.sum()
+    total = grouped.sum()
     if total == 0:
         return {}
 
-    return {k: round((v / total) * 100, 2) for k, v in group.items()}
+    return {k: round((v / total) * 100, 2) for k, v in grouped.items()}
+
 
 
 def compute_business_metrics(df, year, month, version, scenario):
 
     df = prepare_dataframe(df)
 
+    # Fix year & previous year
+    fy_num = int(year.replace("FY", ""))
+    prev_year = f"FY{fy_num - 1}"
+
     # Filter current period
     df_curr = df[
-        (df["YEAR"] == year) &
-        (df["PERIOD_NUM"] == month) &
-        (df["VERSION"] == version) &
-        (df["SCENARIO"] == scenario)
+        (df["YEAR"] == year)
+        & (df["PERIOD_NUM"] == month)
+        & (df["SCENARIO"] == scenario)
+        & (df["VERSION"] == version)
     ]
 
-    # Previous year logic
-    prev_year = f"FY{int(year.replace('FY', '')) - 1}"
-
+    # Filter previous year same month
     df_prev = df[
-        (df["YEAR"] == prev_year) &
-        (df["PERIOD_NUM"] == month) &
-        (df["VERSION"] == version) &
-        (df["SCENARIO"] == scenario)
+        (df["YEAR"] == prev_year)
+        & (df["PERIOD_NUM"] == month)
+        & (df["SCENARIO"] == scenario)
+        & (df["VERSION"] == version)
     ]
 
-    # ---- Revenue (L5) ----
+ 
     rev_curr = df_curr[df_curr["account_L5_Description"] == "Revenue"]["Amount"].sum()
-    rev_prev = df_prev[df_prev["account_L5_Description"] == "Revenue"]["Amount"].sum()
-    rev_yoy = yoy_variance(rev_curr, rev_prev)
-    rev_contrib = contribution(df_curr[df_curr["account_L5_Description"] == "Revenue"], top_n=None)
-
-    # ---- OPEX (L5) ----
     opex_curr = df_curr[df_curr["account_L5_Description"] == "Operating Expenses"]["Amount"].sum()
-    opex_prev = df_prev[df_prev["account_L5_Description"] == "Operating Expenses"]["Amount"].sum()
-    opex_yoy = yoy_variance(opex_curr, opex_prev)
-    opex_contrib = contribution(df_curr[df_curr["account_L5_Description"] == "Operating Expenses"], top_n=3)
-
-    # ---- EBITDA ----
     ebitda_curr = rev_curr - opex_curr
+
+    rev_prev = df_prev[df_prev["account_L5_Description"] == "Revenue"]["Amount"].sum()
+    opex_prev = df_prev[df_prev["account_L5_Description"] == "Operating Expenses"]["Amount"].sum()
     ebitda_prev = rev_prev - opex_prev
+
+    # YOY %
+    rev_yoy = yoy_variance(rev_curr, rev_prev)
+    opex_yoy = yoy_variance(opex_curr, opex_prev)
     ebitda_yoy = yoy_variance(ebitda_curr, ebitda_prev)
+
+    # L6 Contribution breakdown
+    rev_contrib = contribution(
+        df_curr[df_curr["account_L5_Description"] == "Revenue"],
+        level_col="account_L6_Description"
+    )
+
+    opex_contrib = contribution(
+        df_curr[df_curr["account_L5_Description"] == "Operating Expenses"],
+        level_col="account_L6_Description",
+        top_n=3
+    )
+
 
     return {
         "Revenue": {
             "selected_amount": round(rev_curr, 2),
             "variance_percent_yoy": rev_yoy,
-            "contribution": rev_contrib
+            "contribution": rev_contrib,
         },
         "OPEX": {
             "selected_amount": round(opex_curr, 2),
             "variance_percent_yoy": opex_yoy,
-            "contribution": opex_contrib
+            "contribution": opex_contrib,
         },
         "EBITDA": {
             "selected_amount": round(ebitda_curr, 2),
             "variance_percent_yoy": ebitda_yoy,
-            "contribution": None
+            "contribution": None,
         },
         "meta": {
             "year": year,
@@ -114,43 +142,45 @@ def compute_business_metrics(df, year, month, version, scenario):
             "month": month,
             "month_name": calendar.month_name[month],
             "version": version,
-            "scenario": scenario
+            "scenario": scenario,
         }
     }
 
 
+
 def generate_llm_business_summary(metrics):
+
     prompt = f"""
-You are an FP&A analyst. Create a crisp monthly business summary for Revenue, OPEX, and EBITDA.
+    Create a crisp FP&A business summary from this JSON:
 
-Use ONLY this JSON:
-{json.dumps(metrics, indent=2)}
+    {json.dumps(metrics, indent=2)}
 
-Rules:
-- Keep bullets very sharp (<18 words).
-- Include 📈📉 for YoY movements.
-- Mention L6 drivers for Revenue/OPEX.
-- Do NOT show contribution for EBITDA.
-- Keep tone consultant-grade.
+    Rules:
+    - Provide sharp insights for Revenue, OPEX, and EBITDA.
+    - Include YoY movement explanation.
+    - Include contribution drivers (L6 heads) for Revenue & OPEX.
+    - Tone must sound like CFO deck bullets.
+    - No long sentences. No fluff.
+    - Return ONLY valid JSON of this structure:
 
-Return JSON:
-{{
-  "Revenue": [...],
-  "OPEX": [...],
-  "EBITDA": [...]
-}}
-"""
+    {{
+      "Revenue": ["bullet1", "bullet2"],
+      "OPEX": ["bullet1", "bullet2"],
+      "EBITDA": ["bullet1", "bullet2"]
+    }}
+    """
 
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model=AZURE_DEPLOYMENT_NAME,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
+        temperature=0.3,
     )
 
     try:
-        return json.loads(response.choices[0].message.content)
+        return json.loads(resp.choices[0].message.content)
     except:
         return {"Revenue": [], "OPEX": [], "EBITDA": []}
+
 
 
 def generate_full_business_summary(df, year, month, version, scenario):
