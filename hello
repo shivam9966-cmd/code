@@ -1,46 +1,54 @@
-pip install psycopg2-binary pandas
+from pyspark.sql import functions as F
+from pyspark.sql import Window
 
-
-import pandas as pd
-import psycopg2
-from psycopg2 import sql
-
-# Load CSV
-df = pd.read_csv("one_month_data.csv")
-
-# PostgreSQL connection
-conn = psycopg2.connect(
-    dbname="your_database",
-    user="postgres",
-    password="your_password",
-    host="localhost",
-    port="5432"
+df_csv = df_csv.withColumn(
+    "actual_months",
+    F.when(
+        F.col("scenario").rlike(r"F\d+_\d+"),
+        F.regexp_extract("scenario", r"F(\d+)_\d+", 1).cast("int")
+    ).otherwise(F.lit(None))
 )
 
-cur = conn.cursor()
+w = Window.orderBy(F.col("actual_months").desc())
 
-# Create table dynamically (based on dataframe)
-columns = ", ".join([f'"{col}" TEXT' for col in df.columns])
+df_csv = df_csv.withColumn(
+    "rank_actual",
+    F.when(
+        F.col("actual_months").isNotNull(),
+        F.dense_rank().over(w)
+    )
+)
 
-create_table_query = f'''
-CREATE TABLE IF NOT EXISTS one_month_data (
-    {columns}
-);
-'''
 
-cur.execute(create_table_query)
-conn.commit()
+df_csv = df_csv.withColumn(
+    "forecast_type",
+    F.when(F.col("actual_months").isNull(), "0")
+     .when(F.col("rank_actual") == 1, "latest")
+     .when(F.col("rank_actual") == 2, "previous")
+     .otherwise("old")
+)
 
-# Insert data
-for _, row in df.iterrows():
-    placeholders = ", ".join(["%s"] * len(row))
-    insert_query = f'''
-        INSERT INTO one_month_data VALUES ({placeholders})
-    '''
-    cur.execute(insert_query, tuple(row))
 
-conn.commit()
-cur.close()
-conn.close()
+df_csv = df_csv.withColumn(
+    "account_L5_Description",
+    F.coalesce(
+        F.col("account_17_description"),
+        F.col("account_16_description"),
+        F.col("account_15_description"),
+        F.col("account_14")
+    )
+)
 
-print("one_month_data uploaded successfully (no SQLAlchemy)")
+
+
+df_csv = df_csv.withColumn(
+    "product_L5_Description",
+    F.coalesce(
+        F.col("product_18_description"),
+        F.col("product_17_description"),
+        F.col("product_16_description"),
+        F.col("product_15_description"),
+        F.col("product_14_description"),
+        F.col("product_13_description")
+    )
+)
