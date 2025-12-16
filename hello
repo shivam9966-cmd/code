@@ -1,10 +1,6 @@
-exclude_prefixes = ("account", "product", "cc")
-
-
-new_cols = []
-
-for c in df_csv.columns:
-    if c.lower().startswith(exclude_prefixes):
-        new_cols.append(F.col(c).alias(c))        # keep as-is
-    else:
-        new_cols.append(F.col(c).alias(c.lower()))  # lowercase
+df_csv = df_csv.select(
+    *[
+        F.col(c).alias(c if c.lower().startswith(exclude_prefixes) else c.lower())
+        for c in df_csv.columns
+    ]
+)
