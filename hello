@@ -1,6 +1,16 @@
-df_csv = df_csv.select(
-    *[
-        F.col(c).alias(c if c.lower().startswith(exclude_prefixes) else c.lower())
-        for c in df_csv.columns
-    ]
+df_csv = df_csv.withColumnRenamed("CC_PR_AC", "cc_pr_ac")
+
+
+df_csv = df_csv.drop("rank_actual")
+
+
+from pyspark.sql import functions as F
+
+df_csv = df_csv.withColumn(
+    "quarter_num",
+    F.when(
+        F.col("quarter").rlike("(?i)^q[1-4]$"),
+        F.regexp_extract(F.col("quarter"), r"([1-4])", 1).cast("int")
+    ).otherwise(None)
 )
+
