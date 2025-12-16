@@ -1,23 +1,4 @@
-from fastapi import FastAPI
-import pandas as pd
+C:\Users\lc5762242\projects\FIS\myenv
 
-from business_summary_engine import generate_full_business_summary
-from kpi_tiles_engine import generate_kpi_tiles
 
-app = FastAPI()
-
-df = pd.read_csv("granular_subset_single.csv")
-
-@app.post("/business-summary")
-def business_summary(request: dict):
-    return generate_full_business_summary(
-        df=df,
-        year=request["year"],
-        month=request["month"],
-        version=request["version"],
-        scenario=request["scenario"]
-    )
-
-@app.get("/kpi-tiles")
-def kpi_tiles():
-    return generate_kpi_tiles(df)
+C:\Users\lc5762242\projects\FIS\myenv\Scripts\activate
