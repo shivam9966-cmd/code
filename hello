@@ -1,16 +1,94 @@
-df_csv = df_csv.withColumnRenamed("CC_PR_AC", "cc_pr_ac")
+def get_business_insights(self):
+    """
+    Returns KPI tiles for Revenue, OPEX and EBITDA
+    using latest forecast, prior forecast and plan.
+    """
 
+    def to_millions(value):
+        return round(value / 1_000_000, 1)
 
-df_csv = df_csv.drop("rank_actual")
+    def pct_change(current, base):
+        if base == 0 or base is None:
+            return None
+        return round(((current - base) / base) * 100, 1)
 
+    with self.get_cursor() as cursor:
 
-from pyspark.sql import functions as F
+        # 1. Get latest available month
+        cursor.execute("""
+            SELECT MAX(month) FROM finance_data
+        """)
+        latest_month = cursor.fetchone()[0]
 
-df_csv = df_csv.withColumn(
-    "quarter_num",
-    F.when(
-        F.col("quarter").rlike("(?i)^q[1-4]$"),
-        F.regexp_extract(F.col("quarter"), r"([1-4])", 1).cast("int")
-    ).otherwise(None)
-)
+        insights = {}
 
+        kpis = ["Revenue", "OPEX"]
+        kpi_values = {}
+
+        for kpi in kpis:
+            # Latest forecast
+            cursor.execute("""
+                SELECT COALESCE(SUM(amount), 0)
+                FROM finance_data
+                WHERE kpi = %s
+                  AND forecast_flag = 'latest'
+                  AND month = %s
+            """, (kpi, latest_month))
+            latest_val = cursor.fetchone()[0]
+
+            # Prior forecast
+            cursor.execute("""
+                SELECT COALESCE(SUM(amount), 0)
+                FROM finance_data
+                WHERE kpi = %s
+                  AND forecast_flag = 'prior'
+                  AND month = %s
+            """, (kpi, latest_month))
+            prior_val = cursor.fetchone()[0]
+
+            # Plan
+            cursor.execute("""
+                SELECT COALESCE(SUM(amount), 0)
+                FROM finance_data
+                WHERE kpi = %s
+                  AND scenario = 'Plan'
+                  AND month = %s
+            """, (kpi, latest_month))
+            plan_val = cursor.fetchone()[0]
+
+            kpi_values[kpi] = {
+                "latest": latest_val,
+                "prior": prior_val,
+                "plan": plan_val
+            }
+
+            insights[kpi.lower()] = {
+                "current_forecast": f"${to_millions(latest_val)}M",
+                "comparison_with_prior_forecast": (
+                    f"{pct_change(latest_val, prior_val)}%"
+                    if prior_val else None
+                ),
+                "comparison_with_plan": (
+                    f"{pct_change(latest_val, plan_val)}%"
+                    if plan_val else None
+                )
+            }
+
+        # EBITDA (derived, NOT stored)
+        ebitda_latest = kpi_values["Revenue"]["latest"] - kpi_values["OPEX"]["latest"]
+        ebitda_prior = kpi_values["Revenue"]["prior"] - kpi_values["OPEX"]["prior"]
+        ebitda_plan = kpi_values["Revenue"]["plan"] - kpi_values["OPEX"]["plan"]
+
+        insights["ebitda"] = {
+            "current_forecast": f"${to_millions(ebitda_latest)}M",
+            "comparison_with_prior_forecast": (
+                f"{pct_change(ebitda_latest, ebitda_prior)}%"
+                if ebitda_prior else None
+            ),
+            "comparison_with_plan": (
+                f"{pct_change(ebitda_latest, ebitda_plan)}%"
+                if ebitda_plan else None
+            )
+        }
+
+        return insights
