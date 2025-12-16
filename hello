@@ -1,6 +1,83 @@
-from pyspark.sql import functions as F
+import pandas as pd
+import calendar
 
-df = df.withColumn(
-    "quarter_num",
-    F.regexp_extract(F.col("quarter"), r"Q([1-4])", 1).cast("int")
-)
+MONTH_MAP = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
+    "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
+    "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12
+}
+
+
+def _fmt_m(value):
+    return f"${round(value / 1_000_000, 1)}M"
+
+
+def _pct(curr, base):
+    if base == 0 or pd.isna(base):
+        return None
+    sign = "+" if curr >= base else ""
+    return f"{sign}{round(((curr - base) / base) * 100, 1)}%"
+
+
+def _prep(df):
+    df = df.copy()
+    df["PERIOD"] = df["PERIOD"].str.strip().str.title()
+    df["PERIOD_NUM"] = df["PERIOD"].map(MONTH_MAP)
+    df["VERSION"] = df["VERSION"].str.strip()
+    df["SCENARIO"] = df["SCENARIO"].str.strip()
+    df["account_L5_Description"] = df["account_L5_Description"].str.strip()
+    return df
+
+
+def _get_value(df, year, month, version, scenario, kpi):
+    return df[
+        (df["YEAR"] == year) &
+        (df["PERIOD_NUM"] == month) &
+        (df["VERSION"] == version) &
+        (df["SCENARIO"] == scenario) &
+        (df["account_L5_Description"] == kpi)
+    ]["Amount"].sum()
+
+
+def generate_kpi_tiles(df: pd.DataFrame):
+    df = _prep(df)
+
+    
+    latest = df.sort_values(["YEAR", "PERIOD_NUM"]).iloc[-1]
+    year = latest["YEAR"]
+    month = latest["PERIOD_NUM"]
+
+    curr_forecast = f"F{month - 1}_1"
+    prev_forecast = f"F{month - 2}_2"
+
+    
+    rev_curr = _get_value(df, year, month, curr_forecast, "Forecast", "Revenue")
+    rev_prev = _get_value(df, year, month, prev_forecast, "Forecast", "Revenue")
+    rev_plan = _get_value(df, year, month, "Plan", "Plan", "Revenue")
+
+    opex_curr = _get_value(df, year, month, curr_forecast, "Forecast", "Operating Expenses")
+    opex_prev = _get_value(df, year, month, prev_forecast, "Forecast", "Operating Expenses")
+    opex_plan = _get_value(df, year, month, "Plan", "Plan", "Operating Expenses")
+
+    
+    ebitda_curr = rev_curr - opex_curr
+    ebitda_prev = rev_prev - opex_prev
+    ebitda_plan = rev_plan - opex_plan
+
+    return {
+        "revenue": {
+            "current_forecast": _fmt_m(rev_curr),
+            "comparison_with_prior_forecast": _pct(rev_curr, rev_prev),
+            "comparison_with_plan": _pct(rev_curr, rev_plan),
+        },
+        "opex": {
+            "current_forecast": _fmt_m(opex_curr),
+            "comparison_with_prior_forecast": _pct(opex_curr, opex_prev),
+            "comparison_with_plan": _pct(opex_curr, opex_plan),
+        },
+        "ebitda": {
+            "current_forecast": _fmt_m(ebitda_curr),
+            "comparison_with_prior_forecast": _pct(ebitda_curr, ebitda_prev),
+            "comparison_with_plan": _pct(ebitda_curr, ebitda_plan),
+        }
+    }
