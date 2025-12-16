@@ -1,54 +1,10 @@
-from pyspark.sql import functions as F
-from pyspark.sql import Window
-
-df_csv = df_csv.withColumn(
-    "actual_months",
-    F.when(
-        F.col("scenario").rlike(r"F\d+_\d+"),
-        F.regexp_extract("scenario", r"F(\d+)_\d+", 1).cast("int")
-    ).otherwise(F.lit(None))
-)
-
-w = Window.orderBy(F.col("actual_months").desc())
-
-df_csv = df_csv.withColumn(
-    "rank_actual",
-    F.when(
-        F.col("actual_months").isNotNull(),
-        F.dense_rank().over(w)
-    )
-)
+exclude_prefixes = ("account", "product", "cc")
 
 
-df_csv = df_csv.withColumn(
-    "forecast_type",
-    F.when(F.col("actual_months").isNull(), "0")
-     .when(F.col("rank_actual") == 1, "latest")
-     .when(F.col("rank_actual") == 2, "previous")
-     .otherwise("old")
-)
+new_cols = []
 
-
-df_csv = df_csv.withColumn(
-    "account_L5_Description",
-    F.coalesce(
-        F.col("account_17_description"),
-        F.col("account_16_description"),
-        F.col("account_15_description"),
-        F.col("account_14")
-    )
-)
-
-
-
-df_csv = df_csv.withColumn(
-    "product_L5_Description",
-    F.coalesce(
-        F.col("product_18_description"),
-        F.col("product_17_description"),
-        F.col("product_16_description"),
-        F.col("product_15_description"),
-        F.col("product_14_description"),
-        F.col("product_13_description")
-    )
-)
+for c in df_csv.columns:
+    if c.lower().startswith(exclude_prefixes):
+        new_cols.append(F.col(c).alias(c))        # keep as-is
+    else:
+        new_cols.append(F.col(c).alias(c.lower()))  # lowercase
