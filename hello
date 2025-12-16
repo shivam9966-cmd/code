@@ -1,4 +1,77 @@
-C:\Users\lc5762242\projects\FIS\myenv
+import pandas as pd
 
 
-C:\Users\lc5762242\projects\FIS\myenv\Scripts\activate
+def to_millions(value):
+    return f"${round(value / 1_000_000, 1)}M"
+
+def pct_change(curr, base):
+    if base == 0 or pd.isna(base):
+        return None
+    return f"{round(((curr - base) / abs(base)) * 100, 1)}%"
+
+
+def generate_business_insights(df: pd.DataFrame):
+    """
+    Generates KPI tile insights JSON:
+    - Current Forecast (F11_1)
+    - Comparison vs Prior Forecast (F10_2)
+    - Comparison vs Plan
+    """
+
+    # Ensure numeric
+    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+
+  
+    rev_curr = df[
+        (df["KPI"] == "Revenue") &
+        (df["VERSION"] == "F11_1")
+    ]["Amount"].sum()
+
+    rev_prior = df[
+        (df["KPI"] == "Revenue") &
+        (df["VERSION"] == "F10_2")
+    ]["Amount"].sum()
+
+    rev_plan = df[
+        (df["KPI"] == "Revenue") &
+        (df["VERSION"] == "Plan")
+    ]["Amount"].sum()
+
+    opex_curr = df[
+        (df["KPI"] == "OPEX") &
+        (df["VERSION"] == "F11_1")
+    ]["Amount"].sum()
+
+    opex_prior = df[
+        (df["KPI"] == "OPEX") &
+        (df["VERSION"] == "F10_2")
+    ]["Amount"].sum()
+
+    opex_plan = df[
+        (df["KPI"] == "OPEX") &
+        (df["VERSION"] == "Plan")
+    ]["Amount"].sum()
+
+   
+    ebitda_curr = rev_curr - opex_curr
+    ebitda_prior = rev_prior - opex_prior
+    ebitda_plan = rev_plan - opex_plan
+
+    # Json
+    return {
+        "revenue": {
+            "current_forecast": to_millions(rev_curr),
+            "comparison_with_prior_forecast": pct_change(rev_curr, rev_prior),
+            "comparison_with_plan": pct_change(rev_curr, rev_plan)
+        },
+        "opex": {
+            "current_forecast": to_millions(opex_curr),
+            "comparison_with_prior_forecast": pct_change(opex_curr, opex_prior),
+            "comparison_with_plan": pct_change(opex_curr, opex_plan)
+        },
+        "ebitda": {
+            "current_forecast": to_millions(ebitda_curr),
+            "comparison_with_prior_forecast": pct_change(ebitda_curr, ebitda_prior),
+            "comparison_with_plan": pct_change(ebitda_curr, ebitda_plan)
+        }
+    }
