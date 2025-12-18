@@ -1,124 +1,33 @@
-    def fetch_business_insights_raw(self):
-        """
-        Fetch raw values for Revenue and OPEX
-        (latest forecast, prior forecast, plan)
-        """
+def fetch_base_kpi_data(self, year: int, month: int | None = None):
+    with self.get_cursor() as cursor:
 
-        with self.get_cursor() as cursor:
-
-            # Latest available month
+        if month is None:
             cursor.execute("""
                 SELECT MAX(month)
-                FROM finance_data
-            """)
-            latest_month = cursor.fetchone()[0]
+                FROM finance.kpi_data
+                WHERE year = %s
+            """, (year,))
+            month = cursor.fetchone()[0]
 
-            cursor.execute("""
-                SELECT
-                    kpi,
-                    SUM(CASE WHEN forecast_type = 'Latest' THEN amount ELSE 0 END) AS latest_val,
-                    SUM(CASE WHEN forecast_type = 'Prior' THEN amount ELSE 0 END) AS prior_val,
-                    SUM(CASE WHEN scenario = 'Plan' THEN amount ELSE 0 END) AS plan_val
-                FROM finance_data
-                WHERE kpi IN ('Revenue', 'OPEX')
-                  AND month = %s
-                GROUP BY kpi
-            """, (latest_month,))
+        cursor.execute("""
+            SELECT
+                kpi,
+                SUM(CASE WHEN forecast_type = 'Latest' THEN amount ELSE 0 END) AS latest,
+                SUM(CASE WHEN forecast_type = 'Prior' THEN amount ELSE 0 END) AS prior,
+                SUM(CASE WHEN scenario = 'Plan' THEN amount ELSE 0 END) AS plan
+            FROM finance.kpi_data
+            WHERE year = %s
+              AND month = %s
+              AND kpi IN ('Revenue', 'OPEX', 'EBITDA')
+            GROUP BY kpi
+        """, (year, month))
 
-            rows = cursor.fetchall()
-
-            data = {
-                row[0]: {
-                    "latest": row[1],
-                    "prior": row[2],
-                    "plan": row[3]
-                }
-                for row in rows
-            }
-
-            return {
-                "month": latest_month,
-                "data": data
-            }
-
-
-
-
-
-
-
-from dbutils import DBUtils
-
-
-def _format_millions(value):
-    return f"${round(value / 1_000_000, 1)}M"
-
-
-def _pct_change(current, base):
-    if base in (0, None):
-        return None
-    sign = "+" if current >= base else ""
-    return f"{sign}{round(((current - base) / base) * 100, 1)}%"
-
-
-def get_business_insights():
-    """
-    Returns formatted business insights JSON
-    """
-
-    dbutils = DBUtils()
-    raw = dbutils.fetch_business_insights_raw()
-    data = raw["data"]
-
-    revenue = data["Revenue"]
-    opex = data["OPEX"]
-    ebitda = data["EBITDA"]
+        rows = cursor.fetchall()
 
     return {
-        "revenue": {
-            "current_forecast": _format_millions(revenue["latest"]),
-            "comparison_with_prior_forecast": _pct_change(
-                revenue["latest"], revenue["prior"]
-            ),
-            "comparison_with_plan": _pct_change(
-                revenue["latest"], revenue["plan"]
-            )
-        },
-        "opex": {
-            "current_forecast": _format_millions(opex["latest"]),
-            "comparison_with_prior_forecast": _pct_change(
-                opex["latest"], opex["prior"]
-            ),
-            "comparison_with_plan": _pct_change(
-                opex["latest"], opex["plan"]
-            )
-        },
-        "ebitda": {
-            "current_forecast": _format_millions(ebitda["latest"]),
-            "comparison_with_prior_forecast": _pct_change(
-                ebitda["latest"], ebitda["prior"]
-            ),
-            "comparison_with_plan": _pct_change(
-                ebitda["latest"], ebitda["plan"]
-            )
+        "year": year,
+        "month": month,
+        "data": {
+            row[0]: {"latest": row[1], "prior": row[2], "plan": row[3]}
+            for row in rows
         }
-    }
-
-
-
-
-
-
-
-
-
-from fastapi import FastAPI
-from business_insights import get_business_insights
-
-app = FastAPI()
-
-
-@app.get("/business-insights")
-def business_insights():
-    return get_business_insights()
-
