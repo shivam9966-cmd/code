@@ -1,94 +1,124 @@
-def get_business_insights(self):
-    """
-    Returns KPI tiles for Revenue, OPEX and EBITDA
-    using latest forecast, prior forecast and plan.
-    """
+    def fetch_business_insights_raw(self):
+        """
+        Fetch raw values for Revenue and OPEX
+        (latest forecast, prior forecast, plan)
+        """
 
-    def to_millions(value):
-        return round(value / 1_000_000, 1)
+        with self.get_cursor() as cursor:
 
-    def pct_change(current, base):
-        if base == 0 or base is None:
-            return None
-        return round(((current - base) / base) * 100, 1)
-
-    with self.get_cursor() as cursor:
-
-        # 1. Get latest available month
-        cursor.execute("""
-            SELECT MAX(month) FROM finance_data
-        """)
-        latest_month = cursor.fetchone()[0]
-
-        insights = {}
-
-        kpis = ["Revenue", "OPEX"]
-        kpi_values = {}
-
-        for kpi in kpis:
-            # Latest forecast
+            # Latest available month
             cursor.execute("""
-                SELECT COALESCE(SUM(amount), 0)
+                SELECT MAX(month)
                 FROM finance_data
-                WHERE kpi = %s
-                  AND forecast_flag = 'latest'
-                  AND month = %s
-            """, (kpi, latest_month))
-            latest_val = cursor.fetchone()[0]
+            """)
+            latest_month = cursor.fetchone()[0]
 
-            # Prior forecast
             cursor.execute("""
-                SELECT COALESCE(SUM(amount), 0)
+                SELECT
+                    kpi,
+                    SUM(CASE WHEN forecast_type = 'Latest' THEN amount ELSE 0 END) AS latest_val,
+                    SUM(CASE WHEN forecast_type = 'Prior' THEN amount ELSE 0 END) AS prior_val,
+                    SUM(CASE WHEN scenario = 'Plan' THEN amount ELSE 0 END) AS plan_val
                 FROM finance_data
-                WHERE kpi = %s
-                  AND forecast_flag = 'prior'
+                WHERE kpi IN ('Revenue', 'OPEX')
                   AND month = %s
-            """, (kpi, latest_month))
-            prior_val = cursor.fetchone()[0]
+                GROUP BY kpi
+            """, (latest_month,))
 
-            # Plan
-            cursor.execute("""
-                SELECT COALESCE(SUM(amount), 0)
-                FROM finance_data
-                WHERE kpi = %s
-                  AND scenario = 'Plan'
-                  AND month = %s
-            """, (kpi, latest_month))
-            plan_val = cursor.fetchone()[0]
+            rows = cursor.fetchall()
 
-            kpi_values[kpi] = {
-                "latest": latest_val,
-                "prior": prior_val,
-                "plan": plan_val
+            data = {
+                row[0]: {
+                    "latest": row[1],
+                    "prior": row[2],
+                    "plan": row[3]
+                }
+                for row in rows
             }
 
-            insights[kpi.lower()] = {
-                "current_forecast": f"${to_millions(latest_val)}M",
-                "comparison_with_prior_forecast": (
-                    f"{pct_change(latest_val, prior_val)}%"
-                    if prior_val else None
-                ),
-                "comparison_with_plan": (
-                    f"{pct_change(latest_val, plan_val)}%"
-                    if plan_val else None
-                )
+            return {
+                "month": latest_month,
+                "data": data
             }
 
-        # EBITDA (derived, NOT stored)
-        ebitda_latest = kpi_values["Revenue"]["latest"] - kpi_values["OPEX"]["latest"]
-        ebitda_prior = kpi_values["Revenue"]["prior"] - kpi_values["OPEX"]["prior"]
-        ebitda_plan = kpi_values["Revenue"]["plan"] - kpi_values["OPEX"]["plan"]
 
-        insights["ebitda"] = {
-            "current_forecast": f"${to_millions(ebitda_latest)}M",
-            "comparison_with_prior_forecast": (
-                f"{pct_change(ebitda_latest, ebitda_prior)}%"
-                if ebitda_prior else None
+
+
+
+
+
+from dbutils import DBUtils
+
+
+def _format_millions(value):
+    return f"${round(value / 1_000_000, 1)}M"
+
+
+def _pct_change(current, base):
+    if base in (0, None):
+        return None
+    sign = "+" if current >= base else ""
+    return f"{sign}{round(((current - base) / base) * 100, 1)}%"
+
+
+def get_business_insights():
+    """
+    Returns formatted business insights JSON
+    """
+
+    dbutils = DBUtils()
+    raw = dbutils.fetch_business_insights_raw()
+    data = raw["data"]
+
+    revenue = data["Revenue"]
+    opex = data["OPEX"]
+    ebitda = data["EBITDA"]
+
+    return {
+        "revenue": {
+            "current_forecast": _format_millions(revenue["latest"]),
+            "comparison_with_prior_forecast": _pct_change(
+                revenue["latest"], revenue["prior"]
             ),
-            "comparison_with_plan": (
-                f"{pct_change(ebitda_latest, ebitda_plan)}%"
-                if ebitda_plan else None
+            "comparison_with_plan": _pct_change(
+                revenue["latest"], revenue["plan"]
+            )
+        },
+        "opex": {
+            "current_forecast": _format_millions(opex["latest"]),
+            "comparison_with_prior_forecast": _pct_change(
+                opex["latest"], opex["prior"]
+            ),
+            "comparison_with_plan": _pct_change(
+                opex["latest"], opex["plan"]
+            )
+        },
+        "ebitda": {
+            "current_forecast": _format_millions(ebitda["latest"]),
+            "comparison_with_prior_forecast": _pct_change(
+                ebitda["latest"], ebitda["prior"]
+            ),
+            "comparison_with_plan": _pct_change(
+                ebitda["latest"], ebitda["plan"]
             )
         }
+    }
 
-        return insights
+
+
+
+
+
+
+
+
+from fastapi import FastAPI
+from business_insights import get_business_insights
+
+app = FastAPI()
+
+
+@app.get("/business-insights")
+def business_insights():
+    return get_business_insights()
+
