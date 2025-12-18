@@ -1,19 +1,56 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from business_summary_and_insights import get_business_summary_and_insights
+ def fetch_kpi_data(
+        self,
+        year: int,
+        month: int | None,
+        version: str,
+        forecast_type: str,
+    ):
+        """
+        Fetch KPI data filtered by:
+        - year
+        - month (fallback to latest if None)
+        - version
+        - forecast_type
+        """
 
-app = FastAPI()
-class RequestModel(BaseModel):
-    year: int
-    month: int | None = None
-    version: str
-    forecast_type: str
+        with self.get_cursor() as cursor:
 
-@app.post("/home")
-def home(req: RequestModel):
-    return get_business_summary_and_insights(
-        year=req.year,
-        month=req.month,
-        version=req.version,
-        forecast_type=req.forecast_type,
-    )
+            if month is None:
+                cursor.execute(
+                    """
+                    SELECT MAX(month)
+                    FROM finance.kpi_data
+                    WHERE year = %s
+                      AND version = %s
+                      AND forecast_type = %s
+                    """,
+                    (year, version, forecast_type),
+                )
+                month = cursor.fetchone()[0]
+
+            cursor.execute(
+                """
+                SELECT
+                    kpi,
+                    account_l6,
+                    SUM(amount) AS amount
+                FROM finance.kpi_data
+                WHERE year = %s
+                  AND month = %s
+                  AND version = %s
+                  AND forecast_type = %s
+                  AND kpi IN ('Revenue', 'OPEX')
+                GROUP BY kpi, account_l6
+                """,
+                (year, month, version, forecast_type),
+            )
+
+            rows = cursor.fetchall()
+
+        return {
+            "year": year,
+            "month": month,
+            "version": version,
+            "forecast_type": forecast_type,
+            "rows": rows,
+        }
