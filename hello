@@ -1,127 +1,19 @@
-from collections import defaultdict
-from dbutils import DBUtils
-from openai import AzureOpenAI
+from fastapi import FastAPI
+from pydantic import BaseModel
+from business_summary_and_insights import get_business_summary_and_insights
 
-def pct_change(curr, prev):
-    if prev == 0:
-        return None
-    return round(((curr - prev) / prev) * 100, 1)
+app = FastAPI()
+class RequestModel(BaseModel):
+    year: int
+    month: int | None = None
+    version: str
+    forecast_type: str
 
-def format_cr(value):
-    return round(value / 1_000_000, 2)
-
-client = AzureOpenAI(
-    api_key="YOUR_AZURE_OPENAI_KEY",
-    api_version="2024-12-01-preview",
-    azure_endpoint="YOUR_ENDPOINT",
-)
-
-DEPLOYMENT_NAME = "gpt-4o-mini"
-
-def get_business_summary_and_insights(
-    year: int,
-    month: int | None,
-    version: str,
-    forecast_type: str,
-):
-    db = DBUtils()
-
-    curr = db.fetch_kpi_data(year, month, version, forecast_type)
-
-    prev_month = curr["month"] - 1
-    prev = db.fetch_kpi_data(year, prev_month, version, forecast_type)
-
-    def aggregate(rows):
-        total = 0
-        l6 = defaultdict(float)
-        for kpi, acc_l6, amt in rows:
-            total += amt
-            l6[acc_l6] += amt
-        return total, l6
-
-    rev_curr, rev_l6 = aggregate(
-        [r for r in curr["rows"] if r[0] == "Revenue"]
+@app.post("/home")
+def home(req: RequestModel):
+    return get_business_summary_and_insights(
+        year=req.year,
+        month=req.month,
+        version=req.version,
+        forecast_type=req.forecast_type,
     )
-    rev_prev, _ = aggregate(
-        [r for r in prev["rows"] if r[0] == "Revenue"]
-    )
-
-    opex_curr, opex_l6 = aggregate(
-        [r for r in curr["rows"] if r[0] == "OPEX"]
-    )
-    opex_prev, _ = aggregate(
-        [r for r in prev["rows"] if r[0] == "OPEX"]
-    )
-
-    ebitda_curr = rev_curr - opex_curr
-    ebitda_prev = rev_prev - opex_prev
-
-    insights = {
-        "filters": {
-            "year": year,
-            "month": curr["month"],
-            "version": version,
-            "forecast_type": forecast_type,
-        },
-        "revenue": {
-            "amount_cr": format_cr(rev_curr),
-            "mom_pct": pct_change(rev_curr, rev_prev),
-            "l6_breakdown": {
-                k: round(v / rev_curr * 100, 1)
-                for k, v in rev_l6.items()
-            },
-        },
-        "opex": {
-            "amount_cr": format_cr(opex_curr),
-            "mom_pct": pct_change(opex_curr, opex_prev),
-            "top_l6": dict(
-                sorted(
-                    {
-                        k: round(v / opex_curr * 100, 1)
-                        for k, v in opex_l6.items()
-                    }.items(),
-                    key=lambda x: x[1],
-                    reverse=True,
-                )[:3]
-            ),
-        },
-        "ebitda": {
-            "amount_cr": format_cr(ebitda_curr),
-            "mom_pct": pct_change(ebitda_curr, ebitda_prev),
-        },
-    }
-
-    # ---------- PROMPT (same style you liked earlier) ----------
-    prompt = f"""
-You are writing a monthly business performance summary for senior management.
-
-Period: {insights['filters']['month']}/{year}
-Version: {version}
-
-Revenue for the month was ₹{insights['revenue']['amount_cr']} Cr,
-a {insights['revenue']['mom_pct']}% change vs last month,
-driven by {insights['revenue']['l6_breakdown']}.
-
-Operating expenses stood at ₹{insights['opex']['amount_cr']} Cr,
-a {insights['opex']['mom_pct']}% change MoM,
-primarily influenced by {insights['opex']['top_l6']}.
-
-EBITDA came in at ₹{insights['ebitda']['amount_cr']} Cr,
-representing a {insights['ebitda']['mom_pct']}% change vs the previous month.
-
-Write a concise CFO-style paragraph explaining overall performance,
-revenue drivers, cost behavior, and EBITDA impact.
-"""
-
-    response = client.chat.completions.create(
-        model=DEPLOYMENT_NAME,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-    )
-
-    summary = response.choices[0].message.content.strip()
-
-    return {
-        "insights": insights,
-        "summary": summary,
-    }
