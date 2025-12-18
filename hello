@@ -1,20 +1,18 @@
- def fetch_kpi_data(
+    def fetch_kpi_data_for_summary(
         self,
-        year: int,
-        month: int | None,
-        version: str,
-        forecast_type: str,
+        year,
+        month,
+        version,
+        forecast_type
     ):
         """
-        Fetch KPI data filtered by:
-        - year
-        - month (fallback to latest if None)
-        - version
-        - forecast_type
+        Fetch Revenue and OPEX data with all filters applied.
+        Uses existing connection pool and cursor manager.
         """
 
         with self.get_cursor() as cursor:
 
+            # If month is not provided, fall back to latest available month
             if month is None:
                 cursor.execute(
                     """
@@ -24,12 +22,12 @@
                       AND version = %s
                       AND forecast_type = %s
                     """,
-                    (year, version, forecast_type),
+                    (year, version, forecast_type)
                 )
-                month = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                month = result[0]
 
-            cursor.execute(
-                """
+            query = """
                 SELECT
                     kpi,
                     account_l6,
@@ -41,8 +39,11 @@
                   AND forecast_type = %s
                   AND kpi IN ('Revenue', 'OPEX')
                 GROUP BY kpi, account_l6
-                """,
-                (year, month, version, forecast_type),
+            """
+
+            cursor.execute(
+                query,
+                (year, month, version, forecast_type)
             )
 
             rows = cursor.fetchall()
@@ -52,5 +53,5 @@
             "month": month,
             "version": version,
             "forecast_type": forecast_type,
-            "rows": rows,
+            "rows": rows
         }
