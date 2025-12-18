@@ -1,57 +1,57 @@
-	def fetch_kpi_data_for_summary(
-		self,
-		year,
-		month,
-		version,
-		forecast_type
-	):
-		"""
-		Fetch Revenue and OPEX data with all filters applied.
-		Uses existing connection pool and cursor manager.
-		"""
+def fetch_kpi_data_for_summary(
+    self,
+    year,
+    month,
+    version,
+    forecast_type
+):
+    """
+    Fetch Revenue and OPEX data with all filters applied.
+    Uses existing connection pool and cursor manager.
+    """
 
-		with self.get_cursor() as cursor:
+    with self.get_cursor() as cursor:
 
-			# If month is not provided, fall back to latest available month
-			if month is None:
-				cursor.execute(
-					"""
-					SELECT MAX(month)
-					FROM finance.kpi_data
-					WHERE year = %s
-					  AND version = %s
-					  AND forecast_type = %s
-					""",
-					(year, version, forecast_type)
-				)
-				result = cursor.fetchone()
-				month = result[0]
+        # If month is not provided, fall back to latest available month
+        if month is None:
+            cursor.execute(
+                """
+                SELECT MAX(month)
+                FROM finance.kpi_data
+                WHERE year = %s
+                  AND version = %s
+                  AND forecast_type = %s
+                """,
+                (year, version, forecast_type)
+            )
+            result = cursor.fetchone()
+            month = result[0]
 
-			query = """
-				SELECT
-					kpi,
-					account_l6,
-					SUM(amount) AS amount
-				FROM finance.kpi_data
-				WHERE year = %s
-				  AND month = %s
-				  AND version = %s
-				  AND forecast_type = %s
-				  AND kpi IN ('Revenue', 'OPEX')
-				GROUP BY kpi, account_l6
-			"""
+        query = """
+            SELECT
+                kpi,
+                account_l6,
+                SUM(amount) AS amount
+            FROM finance.kpi_data
+            WHERE year = %s
+              AND month = %s
+              AND version = %s
+              AND forecast_type = %s
+              AND kpi IN ('Revenue', 'OPEX')
+            GROUP BY kpi, account_l6
+        """
 
-			cursor.execute(
-				query,
-				(year, month, version, forecast_type)
-			)
+        cursor.execute(
+            query,
+            (year, month, version, forecast_type)
+        )
 
-			rows = cursor.fetchall()
+        rows = cursor.fetchall()
 
-		return {
-			"year": year,
-			"month": month,
-			"version": version,
-			"forecast_type": forecast_type,
-			"rows": rows
-		}
+    return {
+        "year": year,
+        "month": month,
+        "version": version,
+        "forecast_type": forecast_type,
+        "rows": rows
+    }
