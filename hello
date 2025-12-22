@@ -1,57 +1,62 @@
-def fetch_kpi_data_for_summary(
-    self,
-    year,
-    month,
-    version,
-    forecast_type
-):
-    """
-    Fetch Revenue and OPEX data with all filters applied.
-    Uses existing connection pool and cursor manager.
-    """
+import pandas as pd
+from sqlalchemy import create_engine
 
-    with self.get_cursor() as cursor:
+# ----------------------------
+# DATABASE DETAILS
+# ----------------------------
+DB_USER = "postgres"
+DB_PASSWORD = "postgres"          # as requested
+DB_HOST = "localhost"             # change if not local
+DB_PORT = 5432
+DB_NAME = "your_database_name"    # 👈 change this
 
-        # If month is not provided, fall back to latest available month
-        if month is None:
-            cursor.execute(
-                """
-                SELECT MAX(month)
-                FROM finance.kpi_data
-                WHERE year = %s
-                  AND version = %s
-                  AND forecast_type = %s
-                """,
-                (year, version, forecast_type)
-            )
-            result = cursor.fetchone()
-            month = result[0]
+SCHEMA = "finance"
+TABLE_NAME = "kpi_data_new"       # NEW table name
+CSV_PATH = r"C:\path\to\your_file.csv"   # 👈 change this
 
-        query = """
-            SELECT
-                kpi,
-                account_l6,
-                SUM(amount) AS amount
-            FROM finance.kpi_data
-            WHERE year = %s
-              AND month = %s
-              AND version = %s
-              AND forecast_type = %s
-              AND kpi IN ('Revenue', 'OPEX')
-            GROUP BY kpi, account_l6
-        """
+# ----------------------------
+# CREATE CONNECTION
+# ----------------------------
+engine = create_engine(
+    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 
-        cursor.execute(
-            query,
-            (year, month, version, forecast_type)
-        )
+# ----------------------------
+# READ CSV
+# ----------------------------
+df = pd.read_csv(CSV_PATH)
 
-        rows = cursor.fetchall()
+print("CSV columns found:")
+print(df.columns.tolist())
 
-    return {
-        "year": year,
-        "month": month,
-        "version": version,
-        "forecast_type": forecast_type,
-        "rows": rows
-    }
+# ----------------------------
+# KEEP ONLY REQUIRED COLUMNS
+# (extra CSV columns are ignored safely)
+# ----------------------------
+required_columns = [
+    "account",
+    "costcenter",
+    "productline",
+    "scenario",
+    "version",
+    "year",
+    "date",                       # maps to month in API
+    "amount",
+    "account_L5_Description",
+    "account_L6_Description",
+]
+
+df = df[[c for c in required_columns if c in df.columns]]
+
+# ----------------------------
+# UPLOAD TO POSTGRES
+# ----------------------------
+df.to_sql(
+    TABLE_NAME,
+    engine,
+    schema=SCHEMA,
+    if_exists="replace",   # use "append" if table already exists
+    index=False
+)
+
+print(f"✅ Upload complete → {SCHEMA}.{TABLE_NAME}")
