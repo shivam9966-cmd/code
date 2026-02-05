@@ -1,62 +1,29 @@
-import pandas as pd
-from sqlalchemy import create_engine
+import psycopg2
 
-# ----------------------------
-# DATABASE DETAILS
-# ----------------------------
-DB_USER = "postgres"
-DB_PASSWORD = "postgres"          # as requested
-DB_HOST = "localhost"             # change if not local
-DB_PORT = 5432
-DB_NAME = "your_database_name"    # 👈 change this
+CSV_PATH = r"C:\path\to\your_file.csv"   # change this
 
-SCHEMA = "finance"
-TABLE_NAME = "kpi_data_new"       # NEW table name
-CSV_PATH = r"C:\path\to\your_file.csv"   # 👈 change this
-
-# ----------------------------
-# CREATE CONNECTION
-# ----------------------------
-engine = create_engine(
-    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+conn = psycopg2.connect(
+    host="localhost",
+    port=5432,
+    database="postgres",
+    user="postgres",
+    password="YOUR_PASSWORD"
 )
 
-# ----------------------------
-# READ CSV
-# ----------------------------
-df = pd.read_csv(CSV_PATH)
+cur = conn.cursor()
 
-print("CSV columns found:")
-print(df.columns.tolist())
+with open(CSV_PATH, "r", encoding="utf-8") as f:
+    cur.copy_expert(
+        """
+        COPY "AI-ML"."Forecasting Data"
+        FROM STDIN
+        WITH (FORMAT CSV, HEADER TRUE, DELIMITER ',')
+        """,
+        f
+    )
 
-# ----------------------------
-# KEEP ONLY REQUIRED COLUMNS
-# (extra CSV columns are ignored safely)
-# ----------------------------
-required_columns = [
-    "account",
-    "costcenter",
-    "productline",
-    "scenario",
-    "version",
-    "year",
-    "date",                       # maps to month in API
-    "amount",
-    "account_L5_Description",
-    "account_L6_Description",
-]
+conn.commit()
+cur.close()
+conn.close()
 
-df = df[[c for c in required_columns if c in df.columns]]
-
-# ----------------------------
-# UPLOAD TO POSTGRES
-# ----------------------------
-df.to_sql(
-    TABLE_NAME,
-    engine,
-    schema=SCHEMA,
-    if_exists="replace",   # use "append" if table already exists
-    index=False
-)
-
-print(f"✅ Upload complete → {SCHEMA}.{TABLE_NAME}")
+print("CSV uploaded into AI-ML.Forecasting Data ✅")
