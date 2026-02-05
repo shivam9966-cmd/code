@@ -1,54 +1,36 @@
-import os
-import psycopg2
+import pandas as pd
+from sqlalchemy import create_engine, text
 
-CSV_PATH = r"C:\path\to\your_file.csv"   # <-- change this
+# ====== EDIT THESE ======
+CSV_PATH = r"C:\path\to\your_file.csv"     # change
 DB_HOST = "localhost"
 DB_PORT = 5432
 DB_NAME = "postgres"
 DB_USER = "postgres"
-DB_PASSWORD = "YOUR_PASSWORD"           # <-- change this
+DB_PASSWORD = "YOUR_PASSWORD"             # change
 
-def main():
-    if not os.path.exists(CSV_PATH):
-        raise FileNotFoundError(f"CSV not found: {CSV_PATH}")
+SCHEMA = "AIML"                            # your schema
+TABLE = "forecasting_data"                 # your new table name (no spaces)
+# ========================
 
-    conn = psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-    )
+engine = create_engine(
+    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 
-    try:
-        with conn.cursor() as cur:
-            with open(CSV_PATH, "r", encoding="utf-8-sig", newline="") as f:
-                cur.copy_expert(
-                    """
-                    COPY "AI-ML"."Forecasting Data"
-                    FROM STDIN
-                    WITH (
-                        FORMAT CSV,
-                        HEADER TRUE,
-                        DELIMITER ',',
-                        QUOTE '"',
-                        ESCAPE '"'
-                    )
-                    """,
-                    f
-                )
+# Read CSV
+df = pd.read_csv(CSV_PATH)
 
-        conn.commit()
-        print('CSV uploaded into "AI-ML"."Forecasting Data" ✅')
+# Create schema if not exists
+with engine.begin() as conn:
+    conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}";'))
 
-    except Exception as e:
-        conn.rollback()
-        print("❌ Upload failed. Rolled back transaction.")
-        raise e
+# Create/replace table + load data
+df.to_sql(
+    name=TABLE,
+    con=engine,
+    schema=SCHEMA,
+    if_exists="replace",   # drops & recreates table
+    index=False
+)
 
-    finally:
-        conn.close()
-
-
-if __name__ == "__main__":
-    main()
+print(f'✅ Loaded CSV into "{SCHEMA}"."{TABLE}"')
