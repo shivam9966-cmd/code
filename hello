@@ -1,29 +1,22 @@
-import psycopg2
+import csv
 
-CSV_PATH = r"C:\path\to\your_file.csv"   # change this
+path = r"C:\path\to\your_file.csv"
 
-conn = psycopg2.connect(
-    host="localhost",
-    port=5432,
-    database="postgres",
-    user="postgres",
-    password="YOUR_PASSWORD"
-)
+with open(path, "r", encoding="utf-8-sig", newline="") as f:
+    sample = f.read(5000)
 
-cur = conn.cursor()
+print("Sample snippet:\n", sample[:300])
 
-with open(CSV_PATH, "r", encoding="utf-8") as f:
-    cur.copy_expert(
-        """
-        COPY "AI-ML"."Forecasting Data"
-        FROM STDIN
-        WITH (FORMAT CSV, HEADER TRUE, DELIMITER ',')
-        """,
-        f
-    )
+# Try sniff delimiter
+dialect = csv.Sniffer().sniff(sample, delimiters=[",",";","|","\t"])
+print("Detected delimiter repr:", repr(dialect.delimiter))
 
-conn.commit()
-cur.close()
-conn.close()
-
-print("CSV uploaded into AI-ML.Forecasting Data ✅")
+# Now read header + first row and count columns using detected delimiter
+with open(path, "r", encoding="utf-8-sig", newline="") as f:
+    reader = csv.reader(f, delimiter=dialect.delimiter)
+    header = next(reader)
+    row1 = next(reader)
+    print("Header columns:", len(header))
+    print("Row1 columns:", len(row1))
+    print("Header:", header)
+    print("Row1:", row1)
