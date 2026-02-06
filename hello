@@ -1,2 +1,16 @@
-SELECT COUNT(*) FROM "AIML"."forecasting_data";
-SELECT * FROM "AIML"."forecasting_data" LIMIT 5;
+select count(*) as total_rows
+from "AI-ML"."Forecasting Data";
+
+
+select column_name, data_type
+from information_schema.columns
+where table_schema = 'AI-ML'
+  and table_name = 'Forecasting Data'
+order by ordinal_position;
+
+
+select *
+from "AI-ML"."Forecasting Data"
+limit 10;
+
+
