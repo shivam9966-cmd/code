@@ -1,16 +1,19 @@
-select count(*) as total_rows
-from "AI-ML"."Forecasting Data";
+{
+  "storage_account_account_name": "",
+  "storage_account_account_key": "",
+  "storage_account_container_name": "",
 
+  "chat_mode": "condense_question",
 
-select column_name, data_type
-from information_schema.columns
-where table_schema = 'AI-ML'
-  and table_name = 'Forecasting Data'
-order by ordinal_position;
+  "schema_name": "finance",
+  "table_names": {
+    "kpi_data": "kpi_data"
+  },
 
-
-select *
-from "AI-ML"."Forecasting Data"
-limit 10;
-
-
+  "ai_ml": {
+    "schema_name": "AI-ML",
+    "table_names": {
+      "forecasting_data": "Forecasting Data"
+    }
+  }
+}
