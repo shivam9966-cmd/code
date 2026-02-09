@@ -1,19 +1,27 @@
-{
-  "storage_account_account_name": "",
-  "storage_account_account_key": "",
-  "storage_account_container_name": "",
+def followup_decider_fn(prev_qn, prev_answer, user_query, input_file):
+    """
+    Decides whether the current query is a FOLLOW_UP or a NEW query
+    """
 
-  "chat_mode": "condense_question",
+    input_file = (input_file or "").strip().upper()
 
-  "schema_name": "finance",
-  "table_names": {
-    "kpi_data": "kpi_data"
-  },
+    if input_file == "FORECAST ANALYSIS":
+        prompt_file = "forecasting_prompt.txt"
+    elif input_file == "FLUX ANALYSIS":
+        prompt_file = "flux_followup_decider_prompt.txt"
+    else:
+        return "NEW"
 
-  "ai_ml": {
-    "schema_name": "AI-ML",
-    "table_names": {
-      "forecasting_data": "Forecasting Data"
-    }
-  }
-}
+    prompt = load_prompt(prompt_file).format(
+        prev_question=prev_qn or "",
+        prev_answer=prev_answer or "",
+        user_question=user_query or ""
+    )
+
+    llm_output = call_llm(prompt)  # use your EXISTING LLM function
+    llm_output = (llm_output or "").upper()
+
+    if "FOLLOW" in llm_output:
+        return "FOLLOW_UP"
+
+    return "NEW"
