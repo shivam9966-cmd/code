@@ -1,27 +1,70 @@
-def followup_decider_fn(prev_qn, prev_answer, user_query, input_file):
-    """
-    Decides whether the current query is a FOLLOW_UP or a NEW query
-    """
+forecasting_table_info = {
+    "schema": "AIML",
+    "table_name": "forecasting_data",
+    "table_description": (
+        "Revenue forecasting fact table in long format. "
+        "Each row is a monthly revenue amount for a specific Version/Scenario/Year_Version "
+        "and multiple dimensions (account/product/client/location/etc.). "
+        "Time is stored as month_code (e.g., JANF25 / FEBA26). "
+        "Actual vs Forecast is encoded inside month_code (A=Actual, F=Forecast)."
+    ),
 
-    input_file = (input_file or "").strip().upper()
+    "columns": {
+        "Version": "VARCHAR (e.g., '1+11', '2+10')",
+        "Type": "VARCHAR (e.g., 'Revenue')",
+        "Revenue Type": "VARCHAR (e.g., 'Recurring', 'Non-Recurring')",
 
-    if input_file == "FORECAST ANALYSIS":
-        prompt_file = "forecasting_prompt.txt"
-    elif input_file == "FLUX ANALYSIS":
-        prompt_file = "flux_followup_decider_prompt.txt"
-    else:
-        return "NEW"
+        "L3": "VARCHAR",
+        "L4": "VARCHAR",
+        "L5": "VARCHAR",
+        "L6": "VARCHAR",
+        "L7": "VARCHAR",
+        "L8": "VARCHAR",
 
-    prompt = load_prompt(prompt_file).format(
-        prev_question=prev_qn or "",
-        prev_answer=prev_answer or "",
-        user_question=user_query or ""
-    )
+        "Ora_Product": "VARCHAR",
+        "Client Name": "VARCHAR",
+        "EMS ID": "VARCHAR",
 
-    llm_output = call_llm(prompt)  # use your EXISTING LLM function
-    llm_output = (llm_output or "").upper()
+        "HFM_ACCT": "VARCHAR",
+        "HFM_ACCT_GROUP": "VARCHAR",
 
-    if "FOLLOW" in llm_output:
-        return "FOLLOW_UP"
+        "LOCATION": "VARCHAR",
+        "ENTITY": "VARCHAR",
+        "PipelineID": "VARCHAR",
+        "Flag": "VARCHAR",
 
-    return "NEW"
+        "Scenario": "VARCHAR (e.g., '1+11')",
+        "Year_Version": "VARCHAR (e.g., 'FY26')",
+
+        "month_code": "VARCHAR (e.g., 'JANF25', 'FEBA26')",
+        "Month": "VARCHAR (e.g., 'Jan', 'Feb')",
+        "Year": "INTEGER (calendar year)",
+        "amount": "FLOAT (revenue amount for that month_code)"
+    },
+
+    "derived_fields": {
+        "month_type": (
+            "Derived from month_code: 4th character is 'A' (Actual) or 'F' (Forecast). "
+            "Example: 'JANF25' => Forecast, 'FEBA26' => Actual."
+        ),
+        "month_date": (
+            "Derived DATE for filtering/grouping using month_code. "
+            "month_code format: MMM[A/F]YY. "
+            "Example SQL:\n"
+            "  CASE\n"
+            "    WHEN length(month_code)=6 THEN\n"
+            "      to_date('01-' || left(month_code,3) || '-20' || right(month_code,2), 'DD-Mon-YYYY')\n"
+            "  END"
+        )
+    },
+
+    "query_rules": [
+        "Always query AIML.forecasting_data (never finance.* or revenue_cleaned.csv).",
+        "Do NOT use columns that don't exist: month_date/month_type/embedding/full_json_response/sql_query/etc.",
+        "Use amount for aggregation (SUM(amount)).",
+        "Time filtering should be done via derived month_date from month_code OR via Year + Month if available.",
+        "Scenario is in column 'Scenario' (e.g., '1+11'). Year version is 'Year_Version' (e.g., 'FY26').",
+        "For monthly output: group by derived month_date (or by month_code if needed), order ascending."
+    ],
+
+}
