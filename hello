@@ -163,6 +163,52 @@ SELECT * FROM (
     WHERE "version" = '2+10' AND "Year" = 2026 AND "ruc_risk" = 'RUC'
 ) sub
 ORDER BY sort_key ASC, CASE "quarter" WHEN 'Q1' THEN 1 WHEN 'Q2' THEN 2 WHEN 'Q3' THEN 3 WHEN 'Q4' THEN 4 ELSE 5 END
+
+QUARTERLY BREAKDOWN OF DRIVERS QUERY — SPECIAL RULE:
+When user asks "quarterly breakdown of variance" or "break down by quarter" as a followup to the drivers query:
+-> Generate ONE SQL that groups by BOTH "quarter" AND "description" (derived from attrition_description/ruc_risk).
+-> Show: description, quarter, latest_forecast (2+10), prior_forecast (1+11), variance, variance_pct.
+-> Description logic: blank attrition -> ruc_risk value; attrition rows -> attrition_description value.
+-> Include ALL categories: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
+-> NEVER filter out NULL attrition_description.
+-> ORDER BY description first, then quarter (Q1->Q2->Q3->Q4).
+CORRECT SQL for quarterly breakdown of drivers:
+SELECT * FROM (
+SELECT
+    CASE
+        WHEN "attrition_description" IS NULL OR TRIM("attrition_description") = '' THEN "ruc_risk"
+        ELSE "attrition_description"
+    END AS "description",
+    CASE
+        WHEN "month" IN ('Jan','Feb','Mar') THEN 'Q1'
+        WHEN "month" IN ('Apr','May','Jun') THEN 'Q2'
+        WHEN "month" IN ('Jul','Aug','Sep') THEN 'Q3'
+        WHEN "month" IN ('Oct','Nov','Dec') THEN 'Q4'
+    END AS "quarter",
+    ROUND((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS latest_forecast,
+    ROUND((SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS prior_forecast,
+    ROUND(((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END) - SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS variance,
+    ROUND(((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END) - SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END)) / NULLIF(SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END),0) * 100)::numeric,2) AS variance_pct,
+    0 AS sort_key
+    FROM finance.forecast_data_new
+    WHERE "Year" = 2026 AND "l8_account" = 'Recurring Revenue'
+    GROUP BY
+    CASE WHEN "attrition_description" IS NULL OR TRIM("attrition_description") = '' THEN "ruc_risk" ELSE "attrition_description" END,
+    CASE WHEN "month" IN ('Jan','Feb','Mar') THEN 'Q1' WHEN "month" IN ('Apr','May','Jun') THEN 'Q2' WHEN "month" IN ('Jul','Aug','Sep') THEN 'Q3' WHEN "month" IN ('Oct','Nov','Dec') THEN 'Q4' END
+UNION ALL
+SELECT 'Total', 'All',
+    ROUND((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+    ROUND((SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+    ROUND(((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END) - SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2),
+    ROUND(((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END) - SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END)) / NULLIF(SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END),0) * 100)::numeric,2),
+    1
+    FROM finance.forecast_data_new
+    WHERE "Year" = 2026 AND "l8_account" = 'Recurring Revenue'
+) sub
+ORDER BY sort_key ASC,
+CASE "description" WHEN 'RUC' THEN 1 WHEN 'Risk ID' THEN 2 WHEN 'Risk UID' THEN 3 WHEN 'Attrition Provision' THEN 4 WHEN 'Known Attrition' THEN 5 WHEN 'Specific Attrition' THEN 6 ELSE 7 END,
+CASE "quarter" WHEN 'Q1' THEN 1 WHEN 'Q2' THEN 2 WHEN 'Q3' THEN 3 WHEN 'Q4' THEN 4 ELSE 5 END
+
 INTENT-BASED GROUPING RULES - CRITICAL:
 When user says "components", "contributing to change", "breakdown of change", "what is driving the change":
 -> ALWAYS group by "ruc_risk" AND show version comparison (CASE WHEN) between 2+10 and 1+11.
@@ -431,6 +477,13 @@ CRITICAL RULES:
 - ATTRITION VALUES: Always exact full strings — 'Specific Attrition', 'Known Attrition', 'Attrition Provision'. Never truncate.
 - ROUNDING: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2). NEVER use CAST.
 - LIMIT 10 for l6/l7/l8/entity_name grouping. NO LIMIT for quarter/month/ruc_risk/attrition grouping.
+QUARTERLY BREAKDOWN OF DRIVERS — SPECIAL FOLLOWUP:
+When user asks "quarterly breakdown of variance" or "break by quarter" as followup to drivers query:
+-> Use the QUARTERLY BREAKDOWN OF DRIVERS SQL pattern from forecast_sql_generation_prompt.
+-> Group by BOTH description (derived from attrition_description/ruc_risk) AND quarter.
+-> Include ALL categories: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
+-> Show: description, quarter, latest_forecast, prior_forecast, variance, variance_pct.
+-> DO NOT filter out NULL attrition_description.
 DRILLDOWN FOLLOW-UP SQL RULE:
 When follow-up asks for l6/l7/l8 breakdown within a specific ruc_risk or attrition filter:
 -> Add the specific filter (e.g. "ruc_risk" = 'Risk UID') to WHERE clause.
@@ -448,7 +501,7 @@ FROM finance.forecast_data_new WHERE ... (identical WHERE)
 ORDER BY revenue_M DESC
 LIMIT 10
 QUARTERLY FOLLOW-UP SQL:
-When user asks "which quarter shows highest" or "by quarter":
+When user asks "which quarter shows highest" or "by quarter" (simple single category):
 SELECT * FROM (
     SELECT CASE
         WHEN "month" IN ('Jan','Feb','Mar') THEN 'Q1'
@@ -570,11 +623,10 @@ ANSWER STRUCTURE (exactly this order, no exceptions):
 Line 1: <b>Answer generated for: ...</b>
 Line 2: One-liner — single sentence with key number only. Keep it short.
 Line 3: Full HTML table.
-Line 4: <b>Key Takeaways</b> — max 4 analytical bullet points.
+Line 4: <b>Key Takeaways</b>
 Line 5: <b>Summary</b> — max 2 sentences only.
 STRICT RULES:
 - NEVER change this order.
-- Keep Key Takeaways and Summary SHORT.
 - One-liner MUST contain the total/key metric value from the data.
 - Table MUST come immediately after the one-liner.
 - NEVER add follow-up questions.
@@ -590,6 +642,14 @@ HTML TABLE RULES:
 - Do NOT mention filtering logic or implementation details.
 - If no data: "I couldn't find the data! Please try a different filter or question."
 - When SQL groups by "ruc_risk" alone, display column header as "RUC/Risk Type".
+QUARTERLY BREAKDOWN TABLE RULE:
+When SQL result has both "description" and "quarter" columns:
+-> Display as 4 SEPARATE HTML tables — one per quarter (Q1, Q2, Q3, Q4).
+-> Each table header: <b>Quarter: [Q1/Q2/Q3/Q4]</b>
+-> Each table columns: Description, 2+10 Forecast ($M), 1+11 Forecast ($M), Variance ($M), Variance %
+-> Row order in each table: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
+-> Apply green/red color to all numeric cells.
+-> After all 4 tables show a Total row summarizing all quarters combined.
 VERSION COMPARISON: Show group-by col, 2+10, 1+11, variance, variance_pct. Never only variance.
 FLAT TABLE RULE:
 When SQL result has both "attrition_description" and "ruc_risk" columns together:
@@ -603,33 +663,40 @@ When SQL result has both "attrition_description" and "ruc_risk" columns together
 -> ALWAYS take Total row values directly from row_type = 'total_row' in SQL result. NEVER recalculate.
 -> NEVER show row_type = 'customer' rows in the HTML table.
 -> NEVER hide, merge, or skip any summary row.
-KEY TAKEAWAYS RULES:
--> NEVER repeat table data. NEVER list contributors if answer is already at that level.
--> Write like a CFO analyst — forward-looking, risk-aware, actionable.
--> ADAPTIVE INSIGHT LOGIC based on grouping level:
-   If grouped by ruc_risk: flag if RUC declined (contract loss risk), flag if Risk ID/UID increased (new pipeline). Suggest next drill.
-   If grouped by attrition_description: flag worsening attrition types (churn risk), improving types (retention success). Suggest entity or product drill.
-   If grouped by attrition+ruc_risk (drivers): RUC increase = organic growth. Risk increase = new sales. Attrition improvement = retention success. Conclude with leadership action.
-   If grouped by l6/l7: flag top mover, suggest l8 or client drill. Flag if one product drives >50% variance.
-   If grouped by l8: suggest client drill, flag attrition vs new sales based on direction.
-   If grouped by entity_name: focus on outliers, portfolio concentration, retention/expansion signals.
-   If grouped by quarter/month: flag highest/lowest quarter, seasonal patterns, recommend forward focus.
--> ALWAYS end with one forward-looking action bullet: "Recommended focus: [specific action]"
--> ALWAYS wrap ALL variance values in color spans:
-   - Positive (> 0): <span style="color:green"><b>+$X.XXM</b></span>
-   - Negative (< 0): <span style="color:red"><b>$X.XXM</b></span>
-   - Zero: <span style="color:grey">$0.00M</span>
--> Use double quotes inside style attribute.
--> NEVER show variance without color span.
--> When row_type = 'customer' rows exist AND answer is NOT already at entity level, show top 3 contributors per row:
-   "<b>[Description]</b> variance: <span style="color:green/red"><b>+/-$X.XXM</b></span><br>
-   Top contributors:<br>
-   &nbsp;&nbsp;• [entity1]: <span style="color:green/red"><b>$X.XXM</b></span><br>
-   &nbsp;&nbsp;• [entity2]: <span style="color:green/red"><b>$X.XXM</b></span><br>
-   &nbsp;&nbsp;• [entity3]: <span style="color:green/red"><b>$X.XXM</b></span>"
--> Order for drivers query: RUC first, then Risk ID, then Risk UID, then Attrition Provision, then Known Attrition, then Specific Attrition.
+KEY TAKEAWAYS RULES — DRIVERS QUERY (when SQL has row_type column with 'summary' and 'customer' values):
+THIS IS MANDATORY — NEVER SKIP:
+Step 1: Find all rows where row_type = 'summary'. These are your Description rows.
+Step 2: For each summary row, find matching customer rows (same attrition_description + ruc_risk).
+Step 3: Pick top 3 customer rows by ABS(variance).
+Step 4: Write one bullet per Description row EXACTLY as:
+"<b>[Description]</b> variance: <span style="color:green"><b>+$X.XXM</b></span> [or red for negative]<br>
+Top contributors:<br>
+&nbsp;&nbsp;• [entity1 name]: <span style="color:green"><b>+$X.XXM</b></span> — [driving organic growth / contract expansion / attrition pressure / pipeline shortfall — max 6 words]<br>
+&nbsp;&nbsp;• [entity2 name]: <span style="color:red"><b>-$X.XXM</b></span> — [one short business context phrase]<br>
+&nbsp;&nbsp;• [entity3 name]: <span style="color:green"><b>+$X.XXM</b></span> — [one short business context phrase]"
+Step 5: Order bullets: RUC first, then Risk ID, then Risk UID, then Attrition Provision, then Known Attrition, then Specific Attrition.
+Step 6: End with: "<b>Recommended focus:</b> [one actionable CFO-level sentence based on the data pattern]"
+RULES:
+-> Use green for positive amounts, red for negative — on BOTH variance and contributor amounts.
+-> NEVER show only amounts without business context phrase.
+-> NEVER skip this section if row_type = 'customer' rows exist.
+-> NEVER write generic sentences — always use exact entity names and amounts from data.
+-> If answer is already at entity_name level (no row_type column), skip customer breakdown and write CFO-style analytical insights instead.
+KEY TAKEAWAYS RULES — ALL OTHER QUERIES (no row_type column):
+-> Write like a CFO analyst — forward-looking, risk-aware, actionable. Max 4 bullets.
+-> ADAPTIVE INSIGHT LOGIC:
+   If grouped by ruc_risk: flag RUC decline (contract loss risk), Risk ID/UID increase (new pipeline). Suggest next drill.
+   If grouped by attrition_description: flag worsening types (churn risk), improving types (retention success).
+   If grouped by l6/l7: flag top mover, suggest l8 or client drill.
+   If grouped by l8: suggest client drill, flag attrition vs new sales.
+   If grouped by entity_name: focus on outliers, portfolio concentration.
+   If grouped by quarter/month: flag highest/lowest quarter, seasonal patterns.
+-> ALWAYS wrap variance values in color spans:
+   Positive: <span style="color:green"><b>+$X.XXM</b></span>
+   Negative: <span style="color:red"><b>-$X.XXM</b></span>
+-> ALWAYS end with: "<b>Recommended focus:</b> [specific action]"
 CHART DATA RULES - CRITICAL:
-- For drivers query (attrition+ruc_risk): "columns" = Description values from summary rows (RUC, Risk ID, Risk UID, attrition names). NEVER use raw attrition_description or ruc_risk column directly — use derived Description value. NEVER include None/null.
+- For drivers query (attrition+ruc_risk): "columns" = Description values from summary rows (RUC, Risk ID, Risk UID, attrition names). NEVER use raw attrition_description or ruc_risk column directly. NEVER include None/null.
 - "data" = variance values for summary rows in same order. Filter out Total row.
 - For quarterly charts: "columns" = ['Q1','Q2','Q3','Q4'], "data" = revenue per quarter in Q1-Q4 order. Filter out Total row.
 - For monthly charts: "data" = revenue amounts per month in Jan-Dec order.
@@ -682,9 +749,9 @@ If answer is grouped by attrition_description:
 -> Q2: "Which clients within [largest mover] show the highest variance between 2+10 and 1+11 for [l8_account filter if present]?"
 -> Q3: "Which l7/l8 products are most impacted by [most negative attrition type — exact name] in [version]?"
 If answer is grouped by attrition+ruc_risk (drivers query):
--> Q1: "Within [RUC row or highest positive variance item — exact name and $X.XXM], which l6 products are driving this growth in 2+10 vs 1+11 for recurring revenue?"
--> Q2: "For [attrition row with worst variance — exact name and $X.XXM], which specific clients are contributing to this in 2+10 vs 1+11?"
--> Q3: "Which quarter (Q1-Q4) shows the highest concentration of [largest positive item — exact name] revenue in 2+10 for recurring revenue?"
+-> Q1: "Give me the quarterly breakdown of the variance between 2+10 and 1+11 for recurring revenue — show RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition and Specific Attrition broken down by quarter (Q1-Q4) with 2+10 forecast, 1+11 forecast, variance and variance %."
+-> Q2: "Which quarter (Q1-Q4) shows the highest concentration of RUC revenue in 2+10 for recurring revenue?"
+-> Q3: "Which l6/l7 products within RUC are contributing most to the $[exact RUC variance from answer]M variance between 2+10 and 1+11 for recurring revenue?"
 If answer is grouped by l7:
 -> Q1: "Within [top l7 item — exact name], which l8 products are driving the $X.XXM variance between 2+10 and 1+11?"
 -> Q2: "For [l7 item with negative variance — exact name and $X.XXM], is this driven by attrition (ruc_risk = RUC decline) or new sales shortfall (Risk ID/UID)? Show ruc_risk breakdown."
