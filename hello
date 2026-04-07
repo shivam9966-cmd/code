@@ -214,47 +214,52 @@ def generate_cap_markets_forecast_dashboard(
 
     CATEGORY_ORDER = ["RUC", "Risk ID", "Risk UID", "Attrition Provision", "Known Attrition", "Specific Attrition"]
 
-    # ONE query for all 6 categories using UNION ALL.
-    # ruc_risk and attrition_description are completely independent columns.
-    # NO cross-filtering between them — each group uses only its own column.
-    # Base WHERE has only "Year" and version filter — NO l8_account or other filters
-    # because those filters may not apply to all categories equally.
+    # WATERFALL LOGIC — simple and direct:
+    # For each of the 6 categories:
+    #   variance = SUM(amount where version=latest) - SUM(amount where version=prior)
+    # ruc_risk column  → RUC, Risk ID, Risk UID
+    # attrition_description column → Known Attrition, Specific Attrition, Attrition Provision
+    # NO other filters applied — just the two version values and the category column filter.
 
-    waterfall_q = text("""
-        SELECT category, ROUND(((
-            SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
-            SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
-        ) / 1000000.0)::numeric, 2) AS variance_m
-        FROM (
-            SELECT "amount", "version", 'RUC'     AS category FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "ruc_risk" = 'RUC'
-            UNION ALL
-            SELECT "amount", "version", 'Risk ID'  FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "ruc_risk" = 'Risk ID'
-            UNION ALL
-            SELECT "amount", "version", 'Risk UID' FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "ruc_risk" = 'Risk UID'
-            UNION ALL
-            SELECT "amount", "version", 'Known Attrition' FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "attrition_description" = 'Known Attrition'
-            UNION ALL
-            SELECT "amount", "version", 'Specific Attrition' FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "attrition_description" = 'Specific Attrition'
-            UNION ALL
-            SELECT "amount", "version", 'Attrition Provision' FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "attrition_description" = 'Attrition Provision'
-        ) sub
-        GROUP BY category
-    """)
-
-    wf_params = {"year": year, "latest_version": latest_version, "prior_version": prior_version}
+    # Get distinct ruc_risk values actually in DB for debug
+    # Then compute variance for each category separately
 
     cat_variances = {}
-    with sqlengine.connect() as conn:
-        wf_rows = conn.execute(waterfall_q, wf_params).fetchall()
 
-    for r in wf_rows:
-        cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
+    # ── ruc_risk: RUC ──
+    q = text("""
+        SELECT
+            ROUND((SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
+                   SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
+            / 1000000.0)::numeric, 2) AS var_m
+        FROM finance.forecast_data_new
+        WHERE "version" IN (:lv, :pv) AND "ruc_risk" = 'RUC'
+    """)
+
+    # Use simple separate queries per category — clearest and most debuggable
+    def _wf_variance(col, val):
+        q = text(f"""
+            SELECT
+                ROUND(((
+                    SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
+                    SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
+                ) / 1000000.0)::numeric, 2) AS var_m
+            FROM finance.forecast_data_new
+            WHERE "version" IN (:lv, :pv)
+            AND "{col}" = :val
+        """)
+        with sqlengine.connect() as conn:
+            row = conn.execute(q, {"lv": latest_version, "pv": prior_version, "val": val}).fetchone()
+        result = float(row[0]) if row and row[0] is not None else 0.0
+        print(f"DEBUG WATERFALL → {col}={val!r} variance={result}M")
+        return result
+
+    cat_variances["RUC"]                 = _wf_variance("ruc_risk", "RUC")
+    cat_variances["Risk ID"]             = _wf_variance("ruc_risk", "Risk ID")
+    cat_variances["Risk UID"]            = _wf_variance("ruc_risk", "Risk UID")
+    cat_variances["Known Attrition"]     = _wf_variance("attrition_description", "Known Attrition")
+    cat_variances["Specific Attrition"]  = _wf_variance("attrition_description", "Specific Attrition")
+    cat_variances["Attrition Provision"] = _wf_variance("attrition_description", "Attrition Provision")
 
     print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
 
