@@ -212,7 +212,7 @@ def generate_cap_markets_forecast_dashboard(
     # RUC / Risk ID / Risk UID  → group by ruc_risk  (no attrition filter)
     # Attrition Provision / Known Attrition / Specific Attrition → group by attrition_description (no ruc_risk filter)
 
-    CATEGORY_ORDER = ["RUC", "Risk ID", "Risk UID", "Attrition Provision", "Known Attrition", "Specific Attrition"]
+    CATEGORY_ORDER = ["RUC", "RISK-ID", "RISK-UNID", "attrition provision", "Known attrition", "Specific attrition"]
 
     # WATERFALL LOGIC — simple and direct:
     # For each of the 6 categories:
@@ -237,29 +237,33 @@ def generate_cap_markets_forecast_dashboard(
     """)
 
     # Use simple separate queries per category — clearest and most debuggable
-    def _wf_variance(col, val):
-        q = text(f"""
-            SELECT
-                ROUND(((
-                    SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
-                    SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
-                ) / 1000000.0)::numeric, 2) AS var_m
-            FROM finance.forecast_data_new
-            WHERE "version" IN (:lv, :pv)
-            AND "{col}" = :val
-        """)
-        with sqlengine.connect() as conn:
-            row = conn.execute(q, {"lv": latest_version, "pv": prior_version, "val": val}).fetchone()
-        result = float(row[0]) if row and row[0] is not None else 0.0
-        print(f"DEBUG WATERFALL → {col}={val!r} variance={result}M")
-        return result
+    waterfall_q = text("""
+        SELECT
+            CASE
+                WHEN "attrition_description" IS NOT NULL AND TRIM("attrition_description") != ''
+                THEN "attrition_description"
+                ELSE "ruc_risk"
+            END AS category,
+            ROUND(((
+                SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
+                SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
+            ) / 1000000.0)::numeric, 2) AS variance_m
+        FROM finance.forecast_data_new
+        WHERE "version" IN (:lv, :pv)
+        GROUP BY CASE
+            WHEN "attrition_description" IS NOT NULL AND TRIM("attrition_description") != ''
+            THEN "attrition_description"
+            ELSE "ruc_risk"
+        END
+    """)
+    with sqlengine.connect() as conn:
+        wf_rows = conn.execute(waterfall_q, {"lv": latest_version, "pv": prior_version}).fetchall()
 
-    cat_variances["RUC"]                 = _wf_variance("ruc_risk", "RUC")
-    cat_variances["Risk ID"]             = _wf_variance("ruc_risk", "RISK-ID")
-    cat_variances["Risk UID"]            = _wf_variance("ruc_risk", "RISK-UNID")
-    cat_variances["Known Attrition"]     = _wf_variance("attrition_description", "Known attrition")
-    cat_variances["Specific Attrition"]  = _wf_variance("attrition_description", "Specific attrition")
-    cat_variances["Attrition Provision"] = _wf_variance("attrition_description", "attrition provision")
+    cat_variances = {}
+    for r in wf_rows:
+        cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
+
+    print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
 
     print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
 
@@ -277,16 +281,26 @@ def generate_cap_markets_forecast_dashboard(
         "category":    "Prior Forecast",
     })
 
+    # Map DB values to clean display labels
+    DISPLAY_LABELS = {
+        "RUC":                 "RUC",
+        "RISK-ID":             "Risk ID",
+        "RISK-UNID":           "Risk UID",
+        "attrition provision": "Attrition Provision",
+        "Known attrition":     "Known Attrition",
+        "Specific attrition":  "Specific Attrition",
+    }
+
     for cat in CATEGORY_ORDER:
         v = cat_variances.get(cat, 0.0)  # already in $M
         bar = {
-            "name":        cat,
+            "name":        DISPLAY_LABELS.get(cat, cat),
             "value":       round(abs(v), 2),
             "base":        round(running + v, 2) if v < 0 else round(running, 2),
             "is_total":    False,
             "is_positive": v >= 0,
             "variance":    round(v, 2),
-            "category":    cat,
+            "category":    DISPLAY_LABELS.get(cat, cat),
         }
         waterfall_bars.append(bar)
         running = round(running + v, 2)
