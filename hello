@@ -214,54 +214,47 @@ def generate_cap_markets_forecast_dashboard(
 
     CATEGORY_ORDER = ["RUC", "Risk ID", "Risk UID", "Attrition Provision", "Known Attrition", "Specific Attrition"]
 
-    # Query 1: RUC / Risk ID / Risk UID
-    # Group by ruc_risk across ALL rows (regardless of attrition_description)
-    # RUC total includes attrition sub-rows — matches Excel bottom table
-    ruc_risk_wf_q = text(f"""
-        SELECT
-            "ruc_risk" AS category,
-            ROUND(((
-                SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
-                SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
-            ) / 1000000.0)::numeric, 2) AS variance_m
-        FROM finance.forecast_data_new
-        WHERE "Year" = :year
-        AND "ruc_risk" IN ('RUC', 'Risk ID', 'Risk UID')
-        {filter_clause}
-        GROUP BY "ruc_risk"
+    # ONE query for all 6 categories using UNION ALL.
+    # ruc_risk and attrition_description are completely independent columns.
+    # NO cross-filtering between them — each group uses only its own column.
+    # Base WHERE has only "Year" and version filter — NO l8_account or other filters
+    # because those filters may not apply to all categories equally.
+
+    waterfall_q = text("""
+        SELECT category, ROUND(((
+            SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
+            SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
+        ) / 1000000.0)::numeric, 2) AS variance_m
+        FROM (
+            SELECT "amount", "version", 'RUC'     AS category FROM finance.forecast_data_new
+            WHERE "Year" = :year AND "ruc_risk" = 'RUC'
+            UNION ALL
+            SELECT "amount", "version", 'Risk ID'  FROM finance.forecast_data_new
+            WHERE "Year" = :year AND "ruc_risk" = 'Risk ID'
+            UNION ALL
+            SELECT "amount", "version", 'Risk UID' FROM finance.forecast_data_new
+            WHERE "Year" = :year AND "ruc_risk" = 'Risk UID'
+            UNION ALL
+            SELECT "amount", "version", 'Known Attrition' FROM finance.forecast_data_new
+            WHERE "Year" = :year AND "attrition_description" = 'Known Attrition'
+            UNION ALL
+            SELECT "amount", "version", 'Specific Attrition' FROM finance.forecast_data_new
+            WHERE "Year" = :year AND "attrition_description" = 'Specific Attrition'
+            UNION ALL
+            SELECT "amount", "version", 'Attrition Provision' FROM finance.forecast_data_new
+            WHERE "Year" = :year AND "attrition_description" = 'Attrition Provision'
+        ) sub
+        GROUP BY category
     """)
 
-    # Query 2: Attrition categories
-    # Attrition rows always have ruc_risk = 'RUC' — filter both columns
-    # These are a SUBSET of RUC rows broken down by attrition type
-    attrition_wf_q = text(f"""
-        SELECT
-            "attrition_description" AS category,
-            ROUND(((
-                SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
-                SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
-            ) / 1000000.0)::numeric, 2) AS variance_m
-        FROM finance.forecast_data_new
-        WHERE "Year" = :year
-        AND "ruc_risk" = 'RUC'
-        AND "attrition_description" IN ('Attrition Provision', 'Known Attrition', 'Specific Attrition')
-        {filter_clause}
-        GROUP BY "attrition_description"
-    """)
+    wf_params = {"year": year, "latest_version": latest_version, "prior_version": prior_version}
 
     cat_variances = {}
-
     with sqlengine.connect() as conn:
-        ruc_wf_rows  = conn.execute(ruc_risk_wf_q, base_params).fetchall()
-        attr_wf_rows = conn.execute(attrition_wf_q, base_params).fetchall()
+        wf_rows = conn.execute(waterfall_q, wf_params).fetchall()
 
-    for r in ruc_wf_rows:
-        if r[0] in CATEGORY_ORDER:
-            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
-
-    for r in attr_wf_rows:
-        if r[0] in CATEGORY_ORDER:
-            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
+    for r in wf_rows:
+        cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
 
     print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
 
