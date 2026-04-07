@@ -31,6 +31,9 @@ def generate_cap_markets_forecast_dashboard(
         year = int(year_result[0]) if year_result and year_result[0] else 2026
 
     print(f"DEBUG → year resolved to: {year}")
+
+    # Fetch ALL versions sorted by number before '+' DESC
+    # e.g. [3+9, 2+10, 1+11] — always picks latest 2 automatically
     version_q = text("""
         SELECT "version" FROM finance.forecast_data_new
         WHERE "Year" = :year
@@ -219,10 +222,10 @@ def generate_cap_markets_forecast_dashboard(
     ruc_risk_wf_q = text(f"""
         SELECT
             "ruc_risk" AS category,
-            ROUND((
+            ROUND(((
                 SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
                 SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
-            ) / 1000000.0, 2) AS variance_m
+            ) / 1000000.0)::numeric, 2) AS variance_m
         FROM finance.forecast_data_new
         WHERE "Year" = :year
         AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
@@ -235,10 +238,10 @@ def generate_cap_markets_forecast_dashboard(
     attrition_wf_q = text(f"""
         SELECT
             "attrition_description" AS category,
-            ROUND((
+            ROUND(((
                 SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
                 SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
-            ) / 1000000.0, 2) AS variance_m
+            ) / 1000000.0)::numeric, 2) AS variance_m
         FROM finance.forecast_data_new
         WHERE "Year" = :year
         AND "attrition_description" IS NOT NULL
