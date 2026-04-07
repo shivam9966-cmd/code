@@ -237,31 +237,42 @@ def generate_cap_markets_forecast_dashboard(
     """)
 
     # Use simple separate queries per category — clearest and most debuggable
-    waterfall_q = text("""
+    # Query 1: ruc_risk — RUC, RISK-ID, RISK-UNID (no attrition filter)
+    ruc_q = text("""
         SELECT
-            CASE
-                WHEN "attrition_description" IS NOT NULL AND TRIM("attrition_description") != ''
-                THEN "attrition_description"
-                ELSE "ruc_risk"
-            END AS category,
+            "ruc_risk" AS category,
             ROUND(((
                 SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
                 SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
             ) / 1000000.0)::numeric, 2) AS variance_m
         FROM finance.forecast_data_new
         WHERE "version" IN (:lv, :pv)
-        GROUP BY CASE
-            WHEN "attrition_description" IS NOT NULL AND TRIM("attrition_description") != ''
-            THEN "attrition_description"
-            ELSE "ruc_risk"
-        END
+        AND "ruc_risk" IN ('RUC', 'RISK-ID', 'RISK-UNID')
+        GROUP BY "ruc_risk"
     """)
-    with sqlengine.connect() as conn:
-        wf_rows = conn.execute(waterfall_q, {"lv": latest_version, "pv": prior_version}).fetchall()
 
+    # Query 2: attrition_description — Known attrition, Specific attrition, attrition provision (no ruc_risk filter)
+    attr_q = text("""
+        SELECT
+            "attrition_description" AS category,
+            ROUND(((
+                SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
+                SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
+            ) / 1000000.0)::numeric, 2) AS variance_m
+        FROM finance.forecast_data_new
+        WHERE "version" IN (:lv, :pv)
+        AND "attrition_description" IN ('Known attrition', 'Specific attrition', 'attrition provision')
+        GROUP BY "attrition_description"
+    """)
+
+    wf_params = {"lv": latest_version, "pv": prior_version}
     cat_variances = {}
-    for r in wf_rows:
-        cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
+
+    with sqlengine.connect() as conn:
+        for r in conn.execute(ruc_q, wf_params).fetchall():
+            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
+        for r in conn.execute(attr_q, wf_params).fetchall():
+            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
 
     print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
 
