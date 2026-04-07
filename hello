@@ -237,7 +237,7 @@ def generate_cap_markets_forecast_dashboard(
     """)
 
     # Use simple separate queries per category — clearest and most debuggable
-    # Query 1: ruc_risk — RUC, RISK-ID, RISK-UNID (no attrition filter)
+    # Query 1: ruc_risk — only rows where attrition_description IS NULL/blank
     ruc_q = text("""
         SELECT
             "ruc_risk" AS category,
@@ -248,6 +248,7 @@ def generate_cap_markets_forecast_dashboard(
         FROM finance.forecast_data_new
         WHERE "version" IN (:lv, :pv)
         AND "ruc_risk" IN ('RUC', 'RISK-ID', 'RISK-UNID')
+        AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
         GROUP BY "ruc_risk"
     """)
 
