@@ -255,11 +255,11 @@ def generate_cap_markets_forecast_dashboard(
         return result
 
     cat_variances["RUC"]                 = _wf_variance("ruc_risk", "RUC")
-    cat_variances["Risk ID"]             = _wf_variance("ruc_risk", "Risk ID")
-    cat_variances["Risk UID"]            = _wf_variance("ruc_risk", "Risk UID")
-    cat_variances["Known Attrition"]     = _wf_variance("attrition_description", "Known Attrition")
-    cat_variances["Specific Attrition"]  = _wf_variance("attrition_description", "Specific Attrition")
-    cat_variances["Attrition Provision"] = _wf_variance("attrition_description", "Attrition Provision")
+    cat_variances["Risk ID"]             = _wf_variance("ruc_risk", "RISK-ID")
+    cat_variances["Risk UID"]            = _wf_variance("ruc_risk", "RISK-UNID")
+    cat_variances["Known Attrition"]     = _wf_variance("attrition_description", "Known attrition")
+    cat_variances["Specific Attrition"]  = _wf_variance("attrition_description", "Specific attrition")
+    cat_variances["Attrition Provision"] = _wf_variance("attrition_description", "attrition provision")
 
     print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
 
