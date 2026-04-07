@@ -205,20 +205,16 @@ def generate_cap_markets_forecast_dashboard(
     }
 
     # ── Step 5: Waterfall Data ────────────────────────────────────────────────
-    # FIX: Use TWO separate queries to correctly separate RUC/Risk rows from Attrition rows.
+    # ruc_risk and attrition_description are FULLY INDEPENDENT columns.
+    # A single row can have BOTH populated simultaneously.
+    # So we query each dimension completely separately — no cross-filtering.
     #
-    # ROOT CAUSE of the bug: The original single CASE query merged attrition_description
-    # and ruc_risk. But in the data, attrition rows have BOTH columns populated.
-    # The CASE picked attrition_description correctly — BUT ruc_risk rows also had
-    # attrition_description values sometimes, causing wrong grouping.
-    #
-    # SOLUTION: Split into two explicit queries:
-    #   Query 1 — RUC/Risk ID/Risk UID: rows where attrition_description IS NULL or blank
-    #   Query 2 — Attrition categories: rows where attrition_description IS populated
+    # RUC / Risk ID / Risk UID  → group by ruc_risk  (no attrition filter)
+    # Attrition Provision / Known Attrition / Specific Attrition → group by attrition_description (no ruc_risk filter)
 
     CATEGORY_ORDER = ["RUC", "Risk ID", "Risk UID", "Attrition Provision", "Known Attrition", "Specific Attrition"]
 
-    # Query 1: RUC / Risk ID / Risk UID rows (blank attrition_description)
+    # Query 1: RUC / Risk ID / Risk UID — independent, no attrition filter
     ruc_risk_wf_q = text(f"""
         SELECT
             "ruc_risk" AS category,
@@ -228,13 +224,12 @@ def generate_cap_markets_forecast_dashboard(
             ) / 1000000.0)::numeric, 2) AS variance_m
         FROM finance.forecast_data_new
         WHERE "Year" = :year
-        AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
         AND "ruc_risk" IN ('RUC', 'Risk ID', 'Risk UID')
         {filter_clause}
         GROUP BY "ruc_risk"
     """)
 
-    # Query 2: Attrition rows (populated attrition_description)
+    # Query 2: Attrition categories — independent, no ruc_risk filter
     attrition_wf_q = text(f"""
         SELECT
             "attrition_description" AS category,
@@ -244,8 +239,6 @@ def generate_cap_markets_forecast_dashboard(
             ) / 1000000.0)::numeric, 2) AS variance_m
         FROM finance.forecast_data_new
         WHERE "Year" = :year
-        AND "attrition_description" IS NOT NULL
-        AND TRIM("attrition_description") != ''
         AND "attrition_description" IN ('Attrition Provision', 'Known Attrition', 'Specific Attrition')
         {filter_clause}
         GROUP BY "attrition_description"
