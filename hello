@@ -91,8 +91,11 @@ ALWAYS use "l8_account" for this filter. No exceptions.
 
 ATTRITION FILTERING:
 If user mentions attrition type -> filter "attrition_description".
-Known values: 'Known Attrition', 'Specific Attrition', 'Attrition Provision'.
-NEVER truncate — always use exact full strings.
+EXACT DB VALUES (case-sensitive — use exactly as shown):
+'Known attrition' — NOT 'Known Attrition'
+'Specific attrition' — NOT 'Specific Attrition'
+'attrition provision' — NOT 'Attrition Provision'
+NEVER use title case. Always use the exact lowercase values as shown above.
 
 ATTRITION NULL FILTER - CRITICAL:
 When grouping by "attrition_description" ALONE (without ruc_risk), ALWAYS add:
@@ -180,9 +183,10 @@ customer_ranked AS (
     WHERE "Year" = 2026 AND "l8_account" = 'Recurring Revenue'
     GROUP BY "attrition_description", "ruc_risk", "entity_name"
 )
+SELECT * FROM (
 SELECT 'summary' AS row_type, s."attrition_description", s."ruc_risk",
 s.latest_forecast, s.prior_forecast, s.variance, s.variance_pct,
-NULL AS entity_name, NULL AS rnk
+NULL AS entity_name, NULL::numeric AS rnk
 FROM summary s
 UNION ALL
 SELECT 'customer', c."attrition_description", c."ruc_risk",
@@ -198,10 +202,11 @@ ROUND(((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END) -
 NULL, NULL
 FROM finance.forecast_data_new
 WHERE "Year" = 2026 AND "l8_account" = 'Recurring Revenue'
+) drivers_result
 ORDER BY
 CASE row_type WHEN 'summary' THEN 0 WHEN 'customer' THEN 1 ELSE 2 END,
-CASE "ruc_risk" WHEN 'RUC' THEN 1 WHEN 'Risk ID' THEN 2 WHEN 'Risk UID' THEN 3 ELSE 4 END ASC,
-"attrition_description" ASC, rnk ASC
+CASE "ruc_risk" WHEN 'RUC' THEN 1 WHEN 'Risk ID' THEN 2 WHEN 'Risk UID' THEN 3 ELSE 4 END,
+"attrition_description", rnk
 ═══════════════════════════════════════════════════════════════
 
 When user says "change in attrition", "explain attrition change", "attrition from 2+10 vs 1+11", "attrition difference":
@@ -295,7 +300,7 @@ Rules:
 - DRILLDOWN forward only: l5->l6->l7->l8->entity_name. ruc_risk->l6/l7 OR attrition OR quarter. Never backwards.
 - For FOLLOW_UP: include full context including exact filter values and amounts from previous answer.
 - If error in previous answer, ignore it and use current question as-is.
-- ATTRITION VALUES: Always use full exact values — 'Specific Attrition', 'Known Attrition', 'Attrition Provision'.
+- ATTRITION VALUES: Use exact DB values — 'Specific attrition', 'Known attrition', 'attrition provision'. Lowercase as in DB.
 
 Return ONLY:
 {"reformatted_question": "<question>", "status_of_query": "<NEW_ANALYSIS_SAME_DOMAIN | NEW_ANALYSIS_NEW_DOMAIN | FOLLOW_UP>", "details": "Explain in 50-100 words why this is NEW or FOLLOW_UP and what the question is asking in finance domain terms."}
@@ -312,7 +317,7 @@ CRITICAL RULES:
 - Keep ALL existing filters from previous SQL (Year, l8_account, version).
 - Only change GROUP BY/SELECT dimensions based on current question.
 - NEVER use integer months. ALWAYS use VARCHAR: 'Jan','Feb','Mar' etc.
-- ATTRITION VALUES: Always exact full strings — 'Specific Attrition', 'Known Attrition', 'Attrition Provision'. Never truncate.
+- ATTRITION VALUES: Use exact DB values — 'Specific attrition', 'Known attrition', 'attrition provision'. These are lowercase in the DB — never use title case.
 - ROUNDING: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2). NEVER use CAST.
 - LIMIT 10 for l6/l7/l8/entity_name grouping. NO LIMIT for quarter/month/ruc_risk/attrition grouping.
 
@@ -407,12 +412,15 @@ Rules:
 - VERSION FIX: If SQL has l4_description or l5_description filters with values like '2' or '10' from splitting a version string, replace with "version" = '2+10' or "version" = '1+11'.
 - VERSION IN FIX: If SQL has WHERE "version" IN ('2+10','1+11') or OR version pattern, use CASE WHEN instead.
 - UNION ALL FIX: If ORDER BY appears before UNION ALL, wrap entire query in subquery. Only ONE ORDER BY at the very end.
+- UNION ALL ORDER BY CASE FIX: PostgreSQL does NOT allow CASE expressions in ORDER BY after UNION ALL/INTERSECT/EXCEPT unless wrapped in a subquery. If SQL has UNION ALL followed by ORDER BY CASE WHEN..., wrap the entire UNION ALL in SELECT * FROM (...) sub and put ORDER BY after.
+  WRONG: SELECT ... UNION ALL SELECT ... ORDER BY CASE row_type WHEN ...
+  RIGHT: SELECT * FROM (SELECT ... UNION ALL SELECT ...) sub ORDER BY CASE row_type WHEN ...
 - CTE FIX: If input SQL contains WITH summary AS (...), preserve CTE structure exactly. NEVER replace with different structure.
 - YEAR FILTER FIX: If "Year" = 2026 missing from any CTE/subquery WHERE clause, add it.
 - RANK() FIX: DESC must be INSIDE OVER() clause.
 - LIMIT 10 for l6/l7/l8/entity_name. NEVER add LIMIT for month/quarter/ruc_risk/attrition.
 - MONTH TYPE FIX: Replace "month" IN (1,2,3) with "month" IN ('Jan','Feb','Mar') etc.
-- ATTRITION VALUE FIX: 'Specific'->'Specific Attrition', 'Known'->'Known Attrition', 'Attrition'->'Attrition Provision'.
+- ATTRITION VALUE FIX: Fix to exact DB values: 'Specific attrition', 'Known attrition', 'attrition provision'. These are lowercase in the DB.
 Input SQL: {sql}
 """.strip()
 
@@ -428,7 +436,7 @@ ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1)
 REVENUE TYPE: If query mentions recurring -> "l8_account" = 'Recurring Revenue'.
 If non-recurring -> "l8_account" = 'Non-Recurring Revenue'. Never use l6_description for this.
 MONTH RULE: "month" column is VARCHAR. Always use 'Jan','Feb' etc. NEVER integers.
-ATTRITION VALUES: 'Specific Attrition', 'Known Attrition', 'Attrition Provision' — exact full strings only.
+ATTRITION VALUES: 'Specific attrition', 'Known attrition', 'attrition provision' — exact DB values, lowercase.
 Rules:
 - Return ONLY JSON: {"steps":["..."], "sql":"SELECT ..."}
 - finance.forecast_data_new only. Double-quote ALL column names.
@@ -662,7 +670,7 @@ NEVER filter on "l6_description", "Revenue Type", "Type", or any other column fo
 ALWAYS use "l8_account" for this filter. No exceptions.
 ATTRITION FILTERING:
 Attrition type -> filter "attrition_description".
-Known values: 'Known Attrition', 'Specific Attrition', 'Attrition Provision'. Always exact full strings.
+Exact DB values: 'Known attrition', 'Specific attrition', 'attrition provision'. Always lowercase as in DB.
 RUC/RISK FILTERING:
 Revenue under contract -> "ruc_risk" = 'RUC'
 Risk identified -> "ruc_risk" = 'Risk ID'
