@@ -353,6 +353,12 @@ def build_line_json(df: pd.DataFrame) -> Dict[str, Any]:
 
 def build_chart_payload(chart_type: str, df: pd.DataFrame, df_desc: pd.DataFrame) -> Dict[str, Any]:
     try:
+        # ── DEBUG: log incoming state ────────────────────────────────────────
+        print(f"[chart_router] chart_type={chart_type} | "
+              f"df_shape={df.shape if df is not None else None} | "
+              f"df_cols={list(df.columns) if df is not None else None} | "
+              f"_is_drivers_query={_is_drivers_query(df)}")
+
         # ── Auto-detect drivers query from DataFrame structure ──────────────
         # Only upgrade to waterfall if chart_type is NOT already forced to bar.
         # This respects the attrition change rule (bar override from detect_chart_type).
@@ -387,12 +393,17 @@ def build_chart_payload(chart_type: str, df: pd.DataFrame, df_desc: pd.DataFrame
 
         # ── Route to correct builder ─────────────────────────────────────────
         if chart_type == "waterfall":
+            # Priority 1: df is a valid structured drivers query result
             if _is_drivers_query(df):
-                # Drivers query — structured waterfall with prior/latest totals
                 return build_waterfall_json(df)
-            else:
-                # Generic waterfall for explicit waterfall keyword questions
-                return build_waterfall_json_generic(df_desc)
+            # Priority 2: df is missing/incomplete but df_desc is a valid drivers result
+            # This handles the case where chart_type="waterfall" was detected from the
+            # question but df was not passed correctly into build_chart_payload
+            if df_desc is not None and not df_desc.empty and _is_drivers_query(df_desc):
+                print("[chart_router] WARNING: df missing drivers columns — falling back to df_desc for waterfall")
+                return build_waterfall_json(df_desc)
+            # Priority 3: Generic waterfall (explicit waterfall/bridge/walk keyword questions)
+            return build_waterfall_json_generic(df_desc)
 
         if chart_type == "pie":
             return build_pie_json(df)
@@ -403,9 +414,9 @@ def build_chart_payload(chart_type: str, df: pd.DataFrame, df_desc: pd.DataFrame
         if chart_type == "line":
             return build_line_json(df)
 
-        print("Chart_type is", chart_type)
+        print(f"[chart_router] Unhandled chart_type: {chart_type}")
         return {"type": chart_type}
 
     except Exception as e:
-        print("Chart build failed:", repr(e))
+        print(f"[chart_router] Chart build failed: {repr(e)}")
         return {"type": "bar", "columns": [], "data": []}
