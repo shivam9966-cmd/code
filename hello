@@ -281,12 +281,23 @@ def build_bar_json(df: pd.DataFrame) -> Dict[str, Any]:
 
     SKIP_COLS = {'row_type', 'sort_key', 'rnk', 'row_number', 'attrition_description', 'ruc_risk'}
 
-    # Filter summary rows only if row_type column exists
+    # ── FIX 1 & 2: Only filter summary rows if row_type column EXISTS
+    # AND 'summary' values are actually present in it.
+    # Previously, if row_type existed but had no 'summary' rows (e.g. plain
+    # version-comparison query that uses total_row only), this wiped df entirely.
     if 'row_type' in df.columns:
-        df = df[df['row_type'] == 'summary'].copy()
+        if 'summary' in df['row_type'].values:
+            df = df[df['row_type'] == 'summary'].copy()
+        else:
+            # row_type exists but no summary rows — drop the column so it
+            # doesn't pollute SKIP logic, keep all rows except 'total_row'
+            df = df[df['row_type'] != 'total_row'].copy()
 
-    # Build Description column for attrition+ruc_risk queries
+    # ── Build Description column for attrition+ruc_risk queries (FIX 2) ──
+    # Both columns are in SKIP_COLS so without this block x_col would be None
+    # and the function would return empty — breaking attrition change bar chart.
     if 'attrition_description' in df.columns and 'ruc_risk' in df.columns:
+        df = df.copy()
         df['Description'] = df.apply(
             lambda r: r['attrition_description']
             if pd.notna(r['attrition_description']) and str(r['attrition_description']).strip() != ''
@@ -313,6 +324,13 @@ def build_bar_json(df: pd.DataFrame) -> Dict[str, Any]:
 
     # Remove Total row from chart
     df = df[df[x_col].astype(str).str.strip() != 'Total']
+
+    # ── FIX 3: For client/entity-wise version comparison queries ──
+    # SQL returns entity_name + latest_forecast + prior_forecast + variance + variance_pct.
+    # x_col will be 'entity_name', y_col will be 'variance'. This is already handled
+    # correctly by the generic x_col detection above (entity_name is not in SKIP_COLS).
+    # No special case needed — the generic path handles it correctly once row_type
+    # filtering is fixed (FIX 1 above).
 
     return {
         "type":    "bar",
@@ -359,6 +377,16 @@ def build_chart_payload(chart_type: str, df: pd.DataFrame, df_desc: pd.DataFrame
               f"df_cols={list(df.columns) if df is not None else None} | "
               f"_is_drivers_query={_is_drivers_query(df)}")
 
+        # ── Guard: if df is None or empty, try df_desc as fallback ──────────
+        if (df is None or df.empty) and (df_desc is not None and not df_desc.empty):
+            print("[chart_router] WARNING: df is None/empty — falling back to df_desc")
+            df = df_desc
+
+        # Early exit if still no data
+        if df is None or df.empty:
+            print("[chart_router] Both df and df_desc are None/empty — returning empty payload")
+            return {"type": chart_type or "bar", "columns": [], "data": []}
+
         # ── Auto-detect drivers query from DataFrame structure ──────────────
         # Only upgrade to waterfall if chart_type is NOT already forced to bar.
         # This respects the attrition change rule (bar override from detect_chart_type).
@@ -397,8 +425,6 @@ def build_chart_payload(chart_type: str, df: pd.DataFrame, df_desc: pd.DataFrame
             if _is_drivers_query(df):
                 return build_waterfall_json(df)
             # Priority 2: df is missing/incomplete but df_desc is a valid drivers result
-            # This handles the case where chart_type="waterfall" was detected from the
-            # question but df was not passed correctly into build_chart_payload
             if df_desc is not None and not df_desc.empty and _is_drivers_query(df_desc):
                 print("[chart_router] WARNING: df missing drivers columns — falling back to df_desc for waterfall")
                 return build_waterfall_json(df_desc)
