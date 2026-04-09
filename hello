@@ -237,7 +237,9 @@ def generate_cap_markets_forecast_dashboard(
     """)
 
     # Use simple separate queries per category — clearest and most debuggable
-    # Query 1: ruc_risk — only rows where attrition_description IS NULL/blank
+    # Query 1: ruc_risk
+    # RUC, RISK-ID, RISK-UNID — only rows where attrition_description IS NULL or blank
+    # This ensures RUC only counts pure RUC rows, not attrition sub-rows
     ruc_q = text("""
         SELECT
             "ruc_risk" AS category,
