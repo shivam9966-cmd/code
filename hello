@@ -47,7 +47,7 @@ def generate_cap_markets_forecast_dashboard(
     if not all_versions:
         return {"error": "Could not auto-detect versions from DB"}
 
-    # FIX: Default to latest 2 versions dynamically — works for any version (3+9, 2+10, etc.)
+    # Default to latest 2 versions dynamically
     latest_version = scenario2 if scenario2 else all_versions[0]
     prior_version  = scenario1 if scenario1 else (all_versions[1] if len(all_versions) > 1 else all_versions[0])
 
@@ -131,20 +131,35 @@ def generate_cap_markets_forecast_dashboard(
     print(f"DEBUG STEP2 → filter_clause: '{filter_clause}'")
     print(f"DEBUG STEP2 → base_params: {base_params}")
 
-    # ── Step 3: Active bar clause (filters tables only, not waterfall) ─────────
+    # ── Step 3: Active bar clause ─────────────────────────────────────────────
+    # Maps frontend display labels to exact DB column values
+    # Used to filter top 5 clients and top 5 L8 tables when user clicks a waterfall bar
+    ACTIVE_BAR_MAP = {
+        "RUC":                 ("ruc_risk",              "RUC"),
+        "Risk ID":             ("ruc_risk",              "RISK-ID"),
+        "Risk UID":            ("ruc_risk",              "RISK-UNID"),
+        "Attrition Provision": ("attrition_description", "attrition provision"),
+        "Known Attrition":     ("attrition_description", "Known attrition"),
+        "Specific Attrition":  ("attrition_description", "Specific attrition"),
+    }
+
     active_bar_clause = ""
     active_bar_params = {}
 
-    if _is_valid_filter(active_bar):
+    if _is_valid_filter(active_bar) and active_bar in ACTIVE_BAR_MAP:
+        col, db_val = ACTIVE_BAR_MAP[active_bar]
         if active_bar == "RUC":
+            # RUC: only blank attrition rows — exclude attrition sub-rows
             active_bar_clause = ' AND "ruc_risk" = :ab_val AND ("attrition_description" IS NULL OR TRIM("attrition_description") = \'\')'
-            active_bar_params["ab_val"] = "RUC"
         elif active_bar in ("Risk ID", "Risk UID"):
-            active_bar_clause = ' AND "ruc_risk" = :ab_val'
-            active_bar_params["ab_val"] = active_bar
-        elif active_bar in ("Attrition Provision", "Known Attrition", "Specific Attrition"):
-            active_bar_clause = ' AND "attrition_description" = :ab_val'
-            active_bar_params["ab_val"] = active_bar
+            # RISK-ID / RISK-UNID: blank attrition rows only
+            active_bar_clause = ' AND "ruc_risk" = :ab_val AND ("attrition_description" IS NULL OR TRIM("attrition_description") = \'\')'
+        else:
+            # Attrition categories: filter by attrition_description
+            active_bar_clause = f' AND "{col}" = :ab_val'
+        active_bar_params["ab_val"] = db_val
+
+    print(f"DEBUG STEP3 → active_bar: {active_bar}, active_bar_clause: {active_bar_clause}, db_val: {active_bar_params}")
 
     # ── Helper: format millions ────────────────────────────────────────────────
     def _fmt_millions(v):
@@ -205,82 +220,12 @@ def generate_cap_markets_forecast_dashboard(
     }
 
     # ── Step 5: Waterfall Data ────────────────────────────────────────────────
-    # ruc_risk and attrition_description are FULLY INDEPENDENT columns.
-    # A single row can have BOTH populated simultaneously.
-    # So we query each dimension completely separately — no cross-filtering.
-    #
-    # RUC / Risk ID / Risk UID  → group by ruc_risk  (no attrition filter)
-    # Attrition Provision / Known Attrition / Specific Attrition → group by attrition_description (no ruc_risk filter)
+    # 6 categories — two independent queries:
+    # Query 1: ruc_risk (RUC, RISK-ID, RISK-UNID) — blank attrition rows only
+    # Query 2: attrition_description (Known attrition, Specific attrition, attrition provision)
+    # Waterfall uses filter_clause so l8_account and other filters apply
 
     CATEGORY_ORDER = ["RUC", "RISK-ID", "RISK-UNID", "attrition provision", "Known attrition", "Specific attrition"]
-
-    # WATERFALL LOGIC — simple and direct:
-    # For each of the 6 categories:
-    #   variance = SUM(amount where version=latest) - SUM(amount where version=prior)
-    # ruc_risk column  → RUC, Risk ID, Risk UID
-    # attrition_description column → Known Attrition, Specific Attrition, Attrition Provision
-    # NO other filters applied — just the two version values and the category column filter.
-
-    # Get distinct ruc_risk values actually in DB for debug
-    # Then compute variance for each category separately
-
-    cat_variances = {}
-
-    # ── ruc_risk: RUC ──
-    q = text("""
-        SELECT
-            ROUND((SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
-                   SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
-            / 1000000.0)::numeric, 2) AS var_m
-        FROM finance.forecast_data_new
-        WHERE "version" IN (:lv, :pv) AND "ruc_risk" = 'RUC'
-    """)
-
-    # Use simple separate queries per category — clearest and most debuggable
-    # Query 1: ruc_risk
-    # RUC, RISK-ID, RISK-UNID — only rows where attrition_description IS NULL or blank
-    # This ensures RUC only counts pure RUC rows, not attrition sub-rows
-    ruc_q = text("""
-        SELECT
-            "ruc_risk" AS category,
-            ROUND(((
-                SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
-                SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
-            ) / 1000000.0)::numeric, 2) AS variance_m
-        FROM finance.forecast_data_new
-        WHERE "version" IN (:lv, :pv)
-        AND "ruc_risk" IN ('RUC', 'RISK-ID', 'RISK-UNID')
-        AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
-        GROUP BY "ruc_risk"
-    """)
-
-    # Query 2: attrition_description — Known attrition, Specific attrition, attrition provision (no ruc_risk filter)
-    attr_q = text("""
-        SELECT
-            "attrition_description" AS category,
-            ROUND(((
-                SUM(CASE WHEN "version" = :lv THEN COALESCE("amount",0) ELSE 0 END) -
-                SUM(CASE WHEN "version" = :pv THEN COALESCE("amount",0) ELSE 0 END)
-            ) / 1000000.0)::numeric, 2) AS variance_m
-        FROM finance.forecast_data_new
-        WHERE "version" IN (:lv, :pv)
-        AND "attrition_description" IN ('Known attrition', 'Specific attrition', 'attrition provision')
-        GROUP BY "attrition_description"
-    """)
-
-    wf_params = {"lv": latest_version, "pv": prior_version}
-    cat_variances = {}
-
-    with sqlengine.connect() as conn:
-        for r in conn.execute(ruc_q, wf_params).fetchall():
-            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
-        for r in conn.execute(attr_q, wf_params).fetchall():
-            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
-
-    print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
-
-    # Build waterfall — same structure as chart_router.py build_waterfall_json
-    # Fields: columns, data, base, is_total, is_positive (frontend renders both the same way)
 
     DISPLAY_LABELS = {
         "RUC":                 "RUC",
@@ -291,13 +236,54 @@ def generate_cap_markets_forecast_dashboard(
         "Specific attrition":  "Specific Attrition",
     }
 
+    # Query 1: RUC / RISK-ID / RISK-UNID — blank attrition rows only
+    ruc_q = text(f"""
+        SELECT
+            "ruc_risk" AS category,
+            ROUND(((
+                SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
+                SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
+            ) / 1000000.0)::numeric, 2) AS variance_m
+        FROM finance.forecast_data_new
+        WHERE "Year" = :year
+        AND "ruc_risk" IN ('RUC', 'RISK-ID', 'RISK-UNID')
+        AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+        {filter_clause}
+        GROUP BY "ruc_risk"
+    """)
+
+    # Query 2: Attrition categories — no ruc_risk filter
+    attr_q = text(f"""
+        SELECT
+            "attrition_description" AS category,
+            ROUND(((
+                SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
+                SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
+            ) / 1000000.0)::numeric, 2) AS variance_m
+        FROM finance.forecast_data_new
+        WHERE "Year" = :year
+        AND "attrition_description" IN ('Known attrition', 'Specific attrition', 'attrition provision')
+        {filter_clause}
+        GROUP BY "attrition_description"
+    """)
+
+    cat_variances = {}
+    with sqlengine.connect() as conn:
+        for r in conn.execute(ruc_q, base_params).fetchall():
+            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
+        for r in conn.execute(attr_q, base_params).fetchall():
+            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
+
+    print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
+
+    # Build waterfall — same structure as chart_router.py build_waterfall_json
     prior_m  = round(prior_total  / 1_000_000, 2)
     latest_m = round(latest_total / 1_000_000, 2)
 
-    columns    = []
-    data       = []
-    base       = []
-    is_total   = []
+    columns     = []
+    data        = []
+    base        = []
+    is_total    = []
     is_positive = []
 
     # Bar 1: Prior — solid bar from 0
@@ -310,7 +296,7 @@ def generate_cap_markets_forecast_dashboard(
     # Bars 2-7: Floating variance bars
     running = prior_m
     for cat in CATEGORY_ORDER:
-        v     = cat_variances.get(cat, 0.0)  # already in $M
+        v     = cat_variances.get(cat, 0.0)
         label = DISPLAY_LABELS.get(cat, cat)
         columns.append(label)
         data.append(round(abs(v), 2))
@@ -508,7 +494,6 @@ def generate_cap_markets_forecast_dashboard(
         "l10_account":           sorted(filter_df["l10_account"].dropna().unique().tolist()),
         "ruc_risk":              sorted(filter_df["ruc_risk"].dropna().unique().tolist()),
         "attrition_description": sorted(filter_df["attrition_description"].dropna().unique().tolist()),
-        # FIX: Sort versions by number before '+' DESC so UI shows latest first
         "version":               sorted(
                                     filter_df["version"].dropna().unique().tolist(),
                                     key=lambda v: int(v.split('+')[0]) if '+' in str(v) else 0,
@@ -516,7 +501,6 @@ def generate_cap_markets_forecast_dashboard(
                                  ),
         "year":                  sorted(filter_df["Year"].dropna().unique().astype(int).tolist()),
         "quarter":               ["Q1", "Q2", "Q3", "Q4"],
-        # FIX: expose default scenarios so frontend can pre-select the latest 2
         "default_scenario1":     prior_version,
         "default_scenario2":     latest_version,
     }
