@@ -132,15 +132,20 @@ def generate_cap_markets_forecast_dashboard(
     print(f"DEBUG STEP2 → base_params: {base_params}")
 
     # ── Step 3: Active bar clause ─────────────────────────────────────────────
-    # Maps frontend display labels to exact DB column values
-    # Used to filter top 5 clients and top 5 L8 tables when user clicks a waterfall bar
+    # Maps ALL possible frontend values to exact DB column + value
+    # Handles both raw DB values (RUC, RISK-ID, RISK-UNID) and display labels
     ACTIVE_BAR_MAP = {
         "RUC":                 ("ruc_risk",              "RUC"),
+        "RISK-ID":             ("ruc_risk",              "RISK-ID"),
+        "RISK-UNID":           ("ruc_risk",              "RISK-UNID"),
         "Risk ID":             ("ruc_risk",              "RISK-ID"),
         "Risk UID":            ("ruc_risk",              "RISK-UNID"),
         "Attrition Provision": ("attrition_description", "attrition provision"),
         "Known Attrition":     ("attrition_description", "Known attrition"),
         "Specific Attrition":  ("attrition_description", "Specific attrition"),
+        "attrition provision": ("attrition_description", "attrition provision"),
+        "Known attrition":     ("attrition_description", "Known attrition"),
+        "Specific attrition":  ("attrition_description", "Specific attrition"),
     }
 
     active_bar_clause = ""
@@ -148,15 +153,12 @@ def generate_cap_markets_forecast_dashboard(
 
     if _is_valid_filter(active_bar) and active_bar in ACTIVE_BAR_MAP:
         col, db_val = ACTIVE_BAR_MAP[active_bar]
-        if active_bar == "RUC":
-            # RUC: only blank attrition rows — exclude attrition sub-rows
-            active_bar_clause = ' AND "ruc_risk" = :ab_val AND ("attrition_description" IS NULL OR TRIM("attrition_description") = \'\')'
-        elif active_bar in ("Risk ID", "Risk UID"):
-            # RISK-ID / RISK-UNID: blank attrition rows only
-            active_bar_clause = ' AND "ruc_risk" = :ab_val AND ("attrition_description" IS NULL OR TRIM("attrition_description") = \'\')'
+        if col == "ruc_risk":
+            # All ruc_risk bars (RUC, RISK-ID, RISK-UNID): blank attrition rows only
+            active_bar_clause = ' AND "ruc_risk" = :ab_val AND ("attrition_description" IS NULL OR TRIM("attrition_description") = \'\')' 
         else:
-            # Attrition categories: filter by attrition_description
-            active_bar_clause = f' AND "{col}" = :ab_val'
+            # Attrition categories
+            active_bar_clause = ' AND "attrition_description" = :ab_val'
         active_bar_params["ab_val"] = db_val
 
     print(f"DEBUG STEP3 → active_bar: {active_bar}, active_bar_clause: {active_bar_clause}, db_val: {active_bar_params}")
