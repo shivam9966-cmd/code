@@ -1,569 +1,93 @@
-def generate_cap_markets_forecast_dashboard(
-    quarter=None,
-    year=None,
-    entity_name=None,
-    scenario1=None,
-    scenario2=None,
-    active_bar=None,
-    # Product filters
-    l4_description=None,
-    l5_description=None,
-    l6_description=None,
-    l7_description=None,
-    l8_description=None,
-    product_description=None,
-    # Account filters
-    l7_account=None,
-    l8_account=None,
-    l9_account=None,
-    l10_account=None,
-    ruc_risk=None,
-    attrition_description=None,
-):
-    # ── Step 1: Auto-detect scenarios dynamically ─────────────────────────────
-    if not year:
-        year_q = text("""
-            SELECT MAX("Year") FROM finance.forecast_data_new
-            WHERE "version" != 'Actuals'
-        """)
-        with sqlengine.connect() as conn:
-            year_result = conn.execute(year_q).fetchone()
-        year = int(year_result[0]) if year_result and year_result[0] else 2026
-
-    print(f"DEBUG → year resolved to: {year}")
-
-    # Fetch ALL versions sorted by number before '+' DESC
-    # e.g. [3+9, 2+10, 1+11] — always picks latest 2 automatically
-    version_q = text("""
-        SELECT "version" FROM finance.forecast_data_new
-        WHERE "Year" = :year
-        AND "version" != 'Actuals'
-        GROUP BY "version"
-        ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC
-    """)
-    with sqlengine.connect() as conn:
-        all_versions = [r[0] for r in conn.execute(version_q, {"year": year}).fetchall()]
-
-    if not all_versions:
-        return {"error": "Could not auto-detect versions from DB"}
-
-    # Default to latest 2 versions dynamically
-    latest_version = scenario2 if scenario2 else all_versions[0]
-    prior_version  = scenario1 if scenario1 else (all_versions[1] if len(all_versions) > 1 else all_versions[0])
-
-    print(f"DEBUG → all_versions: {all_versions}")
-    print(f"DEBUG → latest_version: {latest_version}, prior_version: {prior_version}")
-
-    # ── Step 2: Filter clause ─────────────────────────────────────────────────
-    filter_clause = ""
-    base_params   = {"year": year, "latest_version": latest_version, "prior_version": prior_version}
-
-    def _is_valid_filter(v):
-        return v is not None and str(v).strip() != "" and str(v).strip().lower() not in ("string", "all", "none")
-
-    if _is_valid_filter(quarter):
-        month_map = {
-            "Q1": ("Jan", "Feb", "Mar"),
-            "Q2": ("Apr", "May", "Jun"),
-            "Q3": ("Jul", "Aug", "Sep"),
-            "Q4": ("Oct", "Nov", "Dec"),
-        }
-        if quarter in month_map:
-            months = month_map[quarter]
-            filter_clause += ' AND "month" IN (:m1, :m2, :m3)'
-            base_params["m1"], base_params["m2"], base_params["m3"] = months
-
-    if _is_valid_filter(l8_account):
-        filter_clause += ' AND "l8_account" = :l8_account'
-        base_params["l8_account"] = l8_account
-    else:
-        filter_clause += ' AND "l8_account" = :l8_account'
-        base_params["l8_account"] = "Recurring Revenue"
-
-    if _is_valid_filter(entity_name):
-        filter_clause += ' AND "entity_name" = :entity_name'
-        base_params["entity_name"] = entity_name
-
-    if _is_valid_filter(l8_description):
-        filter_clause += ' AND "l8_description" = :l8_description'
-        base_params["l8_description"] = l8_description
-
-    if _is_valid_filter(ruc_risk):
-        filter_clause += ' AND "ruc_risk" = :ruc_risk'
-        base_params["ruc_risk"] = ruc_risk
-
-    if _is_valid_filter(attrition_description):
-        filter_clause += ' AND "attrition_description" = :attrition_description'
-        base_params["attrition_description"] = attrition_description
-
-    if _is_valid_filter(l4_description):
-        filter_clause += ' AND "l4_description" = :l4_description'
-        base_params["l4_description"] = l4_description
-
-    if _is_valid_filter(l5_description):
-        filter_clause += ' AND "l5_description" = :l5_description'
-        base_params["l5_description"] = l5_description
-
-    if _is_valid_filter(l6_description):
-        filter_clause += ' AND "l6_description" = :l6_description'
-        base_params["l6_description"] = l6_description
-
-    if _is_valid_filter(l7_description):
-        filter_clause += ' AND "l7_description" = :l7_description'
-        base_params["l7_description"] = l7_description
-
-    if _is_valid_filter(product_description):
-        filter_clause += ' AND "product_description" = :product_description'
-        base_params["product_description"] = product_description
-
-    if _is_valid_filter(l7_account):
-        filter_clause += ' AND "l7_account" = :l7_account'
-        base_params["l7_account"] = l7_account
-
-    if _is_valid_filter(l9_account):
-        filter_clause += ' AND "l9_account" = :l9_account'
-        base_params["l9_account"] = l9_account
-
-    if _is_valid_filter(l10_account):
-        filter_clause += ' AND "l10_account" = :l10_account'
-        base_params["l10_account"] = l10_account
-
-    print(f"DEBUG STEP2 → filter_clause: '{filter_clause}'")
-    print(f"DEBUG STEP2 → base_params: {base_params}")
-
-    # ── Step 3: Active bar clause ─────────────────────────────────────────────
-    # Maps ALL possible frontend values to exact DB column + value
-    # Handles both raw DB values (RUC, RISK-ID, RISK-UNID) and display labels
-    ACTIVE_BAR_MAP = {
-        "RUC":                 ("ruc_risk",              "RUC"),
-        "RISK-ID":             ("ruc_risk",              "RISK-ID"),
-        "RISK-UNID":           ("ruc_risk",              "RISK-UNID"),
-        "Risk ID":             ("ruc_risk",              "RISK-ID"),
-        "Risk UID":            ("ruc_risk",              "RISK-UNID"),
-        "Attrition Provision": ("attrition_description", "attrition provision"),
-        "Known Attrition":     ("attrition_description", "Known attrition"),
-        "Specific Attrition":  ("attrition_description", "Specific attrition"),
-        "attrition provision": ("attrition_description", "attrition provision"),
-        "Known attrition":     ("attrition_description", "Known attrition"),
-        "Specific attrition":  ("attrition_description", "Specific attrition"),
-    }
-
-    active_bar_clause = ""
-    active_bar_params = {}
-
-    if _is_valid_filter(active_bar) and active_bar in ACTIVE_BAR_MAP:
-        col, db_val = ACTIVE_BAR_MAP[active_bar]
-        if col == "ruc_risk":
-            # All ruc_risk bars (RUC, RISK-ID, RISK-UNID): blank attrition rows only
-            active_bar_clause = ' AND "ruc_risk" = :ab_val AND ("attrition_description" IS NULL OR TRIM("attrition_description") = \'\')' 
-        else:
-            # Attrition categories
-            active_bar_clause = ' AND "attrition_description" = :ab_val'
-        active_bar_params["ab_val"] = db_val
-
-    print(f"DEBUG STEP3 → active_bar: {active_bar}, active_bar_clause: {active_bar_clause}, db_val: {active_bar_params}")
-
-    # ── Helper: format millions ────────────────────────────────────────────────
-    def _fmt_millions(v):
-        if v is None:
-            return "$0.00M"
-        return f"${round(float(v) / 1_000_000, 2):.2f}M"
-
-    # ── Grand Total Helper ────────────────────────────────────────────────────
-    def _add_grand_total(data, key_col):
-        if not data:
-            return data
-        total_latest = sum(
-            float(str(x["latest_revenue"]).replace("$", "").replace("M", ""))
-            for x in data
-        )
-        total_prior = sum(
-            float(str(x["prior_revenue"]).replace("$", "").replace("M", ""))
-            for x in data
-        )
-        total_variance = total_latest - total_prior
-        total_var_pct  = round((total_variance / total_prior * 100), 2) if total_prior != 0 else None
-        data.append({
-            key_col:          "Total",
-            "latest_revenue": _fmt_millions(total_latest * 1_000_000),
-            "prior_revenue":  _fmt_millions(total_prior  * 1_000_000),
-            "variance":       _fmt_millions(total_variance * 1_000_000),
-            "variance_pct":   f"{'+' if total_var_pct and total_var_pct >= 0 else ''}{total_var_pct}%" if total_var_pct else "N/A"
-        })
-        return data
-
-    # ── Step 4: Forecast Summary ──────────────────────────────────────────────
-    def _get_total_revenue(version):
-        q = text(f"""
-            SELECT SUM(COALESCE("amount", 0)) AS total
-            FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "version" = :version
-            {filter_clause}
-        """)
-        params = {**base_params, "version": version}
-        with sqlengine.connect() as conn:
-            result = conn.execute(q, params).fetchone()
-        return float(result[0]) if result and result[0] else 0.0
-
-    latest_total = _get_total_revenue(latest_version)
-    prior_total  = _get_total_revenue(prior_version)
-    variance     = latest_total - prior_total
-    variance_pct = round((variance / prior_total * 100), 2) if prior_total != 0 else None
-
-    print(f"DEBUG STEP4 → latest_total: {latest_total}, prior_total: {prior_total}")
-
-    forecast_summary = {
-        "latest_version":  latest_version,
-        "prior_version":   prior_version,
-        "latest_forecast": _fmt_millions(latest_total),
-        "prior_forecast":  _fmt_millions(prior_total),
-        "variance":        _fmt_millions(variance),
-        "variance_pct":    f"{'+' if variance_pct and variance_pct >= 0 else ''}{variance_pct}%" if variance_pct else "N/A"
-    }
-
-    # ── Step 5: Waterfall Data ────────────────────────────────────────────────
-    # 6 categories — two independent queries:
-    # Query 1: ruc_risk (RUC, RISK-ID, RISK-UNID) — blank attrition rows only
-    # Query 2: attrition_description (Known attrition, Specific attrition, attrition provision)
-    # Waterfall uses filter_clause so l8_account and other filters apply
-
-    CATEGORY_ORDER = ["RUC", "RISK-ID", "RISK-UNID", "attrition provision", "Known attrition", "Specific attrition"]
-
-    DISPLAY_LABELS = {
-        "RUC":                 "RUC",
-        "RISK-ID":             "Risk ID",
-        "RISK-UNID":           "Risk UID",
-        "attrition provision": "Attrition Provision",
-        "Known attrition":     "Known Attrition",
-        "Specific attrition":  "Specific Attrition",
-    }
-
-    # Query 1: RUC / RISK-ID / RISK-UNID — blank attrition rows only
-    ruc_q = text(f"""
-        SELECT
-            "ruc_risk" AS category,
-            ROUND(((
-                SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
-                SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
-            ) / 1000000.0)::numeric, 2) AS variance_m
-        FROM finance.forecast_data_new
-        WHERE "Year" = :year
-        AND "ruc_risk" IN ('RUC', 'RISK-ID', 'RISK-UNID')
-        AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
-        {filter_clause}
-        GROUP BY "ruc_risk"
-    """)
-
-    # Query 2: Attrition categories — no ruc_risk filter
-    attr_q = text(f"""
-        SELECT
-            "attrition_description" AS category,
-            ROUND(((
-                SUM(CASE WHEN "version" = :latest_version THEN COALESCE("amount", 0) ELSE 0 END) -
-                SUM(CASE WHEN "version" = :prior_version  THEN COALESCE("amount", 0) ELSE 0 END)
-            ) / 1000000.0)::numeric, 2) AS variance_m
-        FROM finance.forecast_data_new
-        WHERE "Year" = :year
-        AND "attrition_description" IN ('Known attrition', 'Specific attrition', 'attrition provision')
-        {filter_clause}
-        GROUP BY "attrition_description"
-    """)
-
-    cat_variances = {}
-    with sqlengine.connect() as conn:
-        for r in conn.execute(ruc_q, base_params).fetchall():
-            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
-        for r in conn.execute(attr_q, base_params).fetchall():
-            cat_variances[r[0]] = float(r[1]) if r[1] is not None else 0.0
-
-    print(f"DEBUG STEP5 → cat_variances (in $M): {cat_variances}")
-
-    # Build waterfall — same structure as chart_router.py build_waterfall_json
-    prior_m  = round(prior_total  / 1_000_000, 2)
-    latest_m = round(latest_total / 1_000_000, 2)
-
-    columns     = []
-    data        = []
-    base        = []
-    is_total    = []
-    is_positive = []
-
-    # Bar 1: Prior — solid bar from 0
-    columns.append(f"Prior ({prior_version})")
-    data.append(prior_m)
-    base.append(0)
-    is_total.append(True)
-    is_positive.append(True)
-
-    # Bars 2-7: Floating variance bars
-    running = prior_m
-    for cat in CATEGORY_ORDER:
-        v     = cat_variances.get(cat, 0.0)
-        label = DISPLAY_LABELS.get(cat, cat)
-        columns.append(label)
-        data.append(round(abs(v), 2))
-        base.append(round(running + v, 2) if v < 0 else round(running, 2))
-        is_total.append(False)
-        is_positive.append(v >= 0)
-        running = round(running + v, 2)
-
-    # Bar 8: Latest — solid bar from 0
-    columns.append(f"Latest ({latest_version})")
-    data.append(latest_m)
-    base.append(0)
-    is_total.append(True)
-    is_positive.append(latest_m >= prior_m)
-
-    waterfall_bars = {
-        "type":        "waterfall",
-        "columns":     columns,
-        "data":        data,
-        "base":        base,
-        "is_total":    is_total,
-        "is_positive": is_positive,
-    }
-
-    print(f"DEBUG STEP5 → waterfall_bars: {waterfall_bars}")
-
-    # ── Step 6: Top 5 Clients ─────────────────────────────────────────────────
-    def _get_client_revenue_filtered(version):
-        q = text(f"""
-            SELECT "entity_name" AS client, SUM(COALESCE("amount", 0)) AS revenue
-            FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "version" = :version
-            {filter_clause}
-            {active_bar_clause}
-            GROUP BY "entity_name"
-            HAVING SUM(COALESCE("amount", 0)) <> 0
-        """)
-        with sqlengine.connect() as conn:
-            df = pd.read_sql(q, conn, params={**base_params, **active_bar_params, "version": version})
-        return df
-
-    latest_client_df = _get_client_revenue_filtered(latest_version)
-    prior_client_df  = _get_client_revenue_filtered(prior_version)
-    prior_client_map = dict(zip(prior_client_df["client"], prior_client_df["revenue"])) if not prior_client_df.empty else {}
-
-    client_variance_data = []
-    for _, r in latest_client_df.iterrows():
-        client     = r["client"]
-        latest_rev = float(r["revenue"])
-        prior_rev  = float(prior_client_map.get(client, 0))
-        variance_v = latest_rev - prior_rev
-        var_pct    = round((variance_v / prior_rev * 100), 2) if prior_rev != 0 else None
-        client_variance_data.append({
-            "client":         client,
-            "latest_revenue": _fmt_millions(latest_rev),
-            "prior_revenue":  _fmt_millions(prior_rev),
-            "variance":       _fmt_millions(variance_v),
-            "variance_pct":   f"{'+' if var_pct and var_pct >= 0 else ''}{var_pct}%" if var_pct else "N/A",
-            "variance_raw":   variance_v
-        })
-
-    sorted_pos_clients = sorted(
-        [x for x in client_variance_data if x["variance_raw"] >= 0],
-        key=lambda x: x["variance_raw"], reverse=True
-    )[:5]
-    sorted_neg_clients = sorted(
-        [x for x in client_variance_data if x["variance_raw"] < 0],
-        key=lambda x: x["variance_raw"]
-    )[:5]
-
-    for item in sorted_pos_clients + sorted_neg_clients:
-        item.pop("variance_raw", None)
-
-    sorted_pos_clients = _add_grand_total(sorted_pos_clients, "client")
-    sorted_neg_clients = _add_grand_total(sorted_neg_clients, "client")
-
-    # ── Step 7: Top 5 L8 ─────────────────────────────────────────────────────
-    def _get_l8_revenue_filtered(version):
-        q = text(f"""
-            SELECT "l8_description" AS l8, SUM(COALESCE("amount", 0)) AS revenue
-            FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "version" = :version
-            {filter_clause}
-            {active_bar_clause}
-            GROUP BY "l8_description"
-            HAVING SUM(COALESCE("amount", 0)) <> 0
-        """)
-        with sqlengine.connect() as conn:
-            df = pd.read_sql(q, conn, params={**base_params, **active_bar_params, "version": version})
-        return df
-
-    latest_l8_df = _get_l8_revenue_filtered(latest_version)
-    prior_l8_df  = _get_l8_revenue_filtered(prior_version)
-    prior_l8_map = dict(zip(prior_l8_df["l8"], prior_l8_df["revenue"])) if not prior_l8_df.empty else {}
-
-    l8_variance_data = []
-    for _, r in latest_l8_df.iterrows():
-        l8         = r["l8"]
-        latest_rev = float(r["revenue"])
-        prior_rev  = float(prior_l8_map.get(l8, 0))
-        variance_v = latest_rev - prior_rev
-        var_pct    = round((variance_v / prior_rev * 100), 2) if prior_rev != 0 else None
-        l8_variance_data.append({
-            "l8":             l8,
-            "latest_revenue": _fmt_millions(latest_rev),
-            "prior_revenue":  _fmt_millions(prior_rev),
-            "variance":       _fmt_millions(variance_v),
-            "variance_pct":   f"{'+' if var_pct and var_pct >= 0 else ''}{var_pct}%" if var_pct else "N/A",
-            "variance_raw":   variance_v
-        })
-
-    sorted_pos_l8 = sorted(
-        [x for x in l8_variance_data if x["variance_raw"] >= 0],
-        key=lambda x: x["variance_raw"], reverse=True
-    )[:5]
-    sorted_neg_l8 = sorted(
-        [x for x in l8_variance_data if x["variance_raw"] < 0],
-        key=lambda x: x["variance_raw"]
-    )[:5]
-
-    for item in sorted_pos_l8 + sorted_neg_l8:
-        item.pop("variance_raw", None)
-
-    sorted_pos_l8 = _add_grand_total(sorted_pos_l8, "l8")
-    sorted_neg_l8 = _add_grand_total(sorted_neg_l8, "l8")
-
-    # ── Step 8: Monthly line chart (both versions) ────────────────────────────
-    MONTH_ORDER = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
-                   "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
-    all_months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-
-    def _get_monthly_revenue(version):
-        q = text(f"""
-            SELECT "month", SUM(COALESCE("amount", 0)) AS value
-            FROM finance.forecast_data_new
-            WHERE "Year" = :year AND "version" = :version
-            {filter_clause}
-            GROUP BY "month"
-        """)
-        with sqlengine.connect() as conn:
-            df = pd.read_sql(q, conn, params={**base_params, "version": version})
-        if not df.empty:
-            df["month_num"] = df["month"].map(MONTH_ORDER).fillna(999).astype(int)
-            df = df.sort_values("month_num")
-        return df
-
-    latest_monthly_df  = _get_monthly_revenue(latest_version)
-    prior_monthly_df   = _get_monthly_revenue(prior_version)
-    latest_monthly_map = dict(zip(latest_monthly_df["month"], latest_monthly_df["value"])) if not latest_monthly_df.empty else {}
-    prior_monthly_map  = dict(zip(prior_monthly_df["month"],  prior_monthly_df["value"]))  if not prior_monthly_df.empty else {}
-
-    latest_columns = [m for m in all_months if m in latest_monthly_map]
-    latest_data    = [round(float(latest_monthly_map[m]) / 1_000_000, 2) for m in latest_columns]
-    prior_columns  = [m for m in all_months if m in prior_monthly_map]
-    prior_data     = [round(float(prior_monthly_map[m])  / 1_000_000, 2) for m in prior_columns]
-
-    print(f"DEBUG STEP8 → latest_columns: {latest_columns}")
-    print(f"DEBUG STEP8 → prior_columns:  {prior_columns}")
-
-    # ── Step 9: Filter unique values ──────────────────────────────────────────
-    filter_options_q = text("""
-        SELECT DISTINCT
-            "entity_name",
-            "product_description",
-            "l4_description",
-            "l5_description",
-            "l6_description",
-            "l7_description",
-            "l8_description",
-            "l7_account",
-            "l8_account",
-            "l9_account",
-            "l10_account",
-            "ruc_risk",
-            "attrition_description",
-            "version",
-            "Year"
-        FROM finance.forecast_data_new
-        WHERE "amount" IS NOT NULL
-    """)
-    with sqlengine.connect() as conn:
-        filter_df = pd.read_sql(filter_options_q, conn)
-
-    unique_col_values = {
-        "entity_name":           sorted(filter_df["entity_name"].dropna().unique().tolist()),
-        "product_description":   sorted(filter_df["product_description"].dropna().unique().tolist()),
-        "l4_description":        sorted(filter_df["l4_description"].dropna().unique().tolist()),
-        "l5_description":        sorted(filter_df["l5_description"].dropna().unique().tolist()),
-        "l6_description":        sorted(filter_df["l6_description"].dropna().unique().tolist()),
-        "l7_description":        sorted(filter_df["l7_description"].dropna().unique().tolist()),
-        "l8_description":        sorted(filter_df["l8_description"].dropna().unique().tolist()),
-        "l7_account":            sorted(filter_df["l7_account"].dropna().unique().tolist()),
-        "l8_account":            sorted(filter_df["l8_account"].dropna().unique().tolist()),
-        "l9_account":            sorted(filter_df["l9_account"].dropna().unique().tolist()),
-        "l10_account":           sorted(filter_df["l10_account"].dropna().unique().tolist()),
-        "ruc_risk":              sorted(filter_df["ruc_risk"].dropna().unique().tolist()),
-        "attrition_description": sorted(filter_df["attrition_description"].dropna().unique().tolist()),
-        "version":               sorted(
-                                    filter_df["version"].dropna().unique().tolist(),
-                                    key=lambda v: int(v.split('+')[0]) if '+' in str(v) else 0,
-                                    reverse=True
-                                 ),
-        "year":                  sorted(filter_df["Year"].dropna().unique().astype(int).tolist()),
-        "quarter":               ["Q1", "Q2", "Q3", "Q4"],
-        "default_scenario1":     prior_version,
-        "default_scenario2":     latest_version,
-    }
-
-    # ── Step 10: Return ───────────────────────────────────────────────────────
-    return {
-        "forecast_summary": forecast_summary,
-        "waterfall_data":   waterfall_bars,
-        "bar_charts": {
-            "top5_clients_positive": {
-                "latest_version": latest_version,
-                "prior_version":  prior_version,
-                "data":           sorted_pos_clients
-            },
-            "top5_clients_negative": {
-                "latest_version": latest_version,
-                "prior_version":  prior_version,
-                "data":           sorted_neg_clients
-            },
-            "top5_l8_positive": {
-                "latest_version": latest_version,
-                "prior_version":  prior_version,
-                "data":           sorted_pos_l8
-            },
-            "top5_l8_negative": {
-                "latest_version": latest_version,
-                "prior_version":  prior_version,
-                "data":           sorted_neg_l8
-            }
-        },
-        "forecast_output": [
-            {
-                "year":    f"FY{year}",
-                "version": prior_version,
-                "chart_data": {
-                    "columns":  prior_columns,
-                    "scenario": [prior_version] * len(prior_columns),
-                    "data":     prior_data
-                }
-            },
-            {
-                "year":    f"FY{year}",
-                "version": latest_version,
-                "chart_data": {
-                    "columns":  latest_columns,
-                    "scenario": [latest_version] * len(latest_columns),
-                    "data":     latest_data
-                }
-            }
-        ],
-        "filters_applied": {
-            "quarter":               quarter,
-            "year":                  year,
-            "l8_account":            base_params.get("l8_account"),
-            "entity_name":           entity_name,
-            "l8_description":        l8_description,
-            "ruc_risk":              ruc_risk,
-            "attrition_description": attrition_description,
-            "scenario1":             prior_version,
-            "scenario2":             latest_version,
-            "active_bar":            active_bar,
-        },
-        "unique_col_values": unique_col_values
-    }
+forecast_followup_query_decider_and_generator = """
+Rewrite the follow-up message as a standalone question with full context. Do not answer.
+
+Previous question: {prev_q}
+Previous answer: {prev_ans}
+Current question: {user_query}
+
+Time Reference Data (FY / Quarter mapping):
+{f_y_q_data}
+
+Column-Value Mapping (AUTHORITATIVE):
+{colvalue_mapping}
+QUICK INTRODUCTION OF COLUMN-VALUE MAPPING:
+- You are given a column_values_mapping_dict.
+- Inside it, you have two categories - "account_level" and "product_level".
+- Each "key" points to a column of data and the corresponding list of values
+  denotes the values of that column.
+- ***STRICT RULE:*** While reformulating the query, make sure to consider EXACT
+  key and corresponding value given. NO single word missing or change is accepted.
+
+Column Hierarchy Mapping (AUTHORITATIVE):
+{hierarchy_mapping}
+
+────────────────────────────────────────────
+TYPES
+────────────────────────────────────────────
+- NEW_ANALYSIS_SAME_DOMAIN: independent question, same data domain
+- NEW_ANALYSIS_NEW_DOMAIN: independent question, different domain
+- FOLLOW_UP: directly depends on and extends previous response
+
+────────────────────────────────────────────
+STRICT CLASSIFICATION RULES
+────────────────────────────────────────────
+- FOLLOW_UP: current question drills deeper into the EXACT SAME
+  topic/dimension from previous answer. Must explicitly reference
+  previous context or be a clear continuation.
+- NEW_ANALYSIS_SAME_DOMAIN: different metric, different grouping,
+  different dimension, new entity, new time period — even if same data.
+- When in doubt -> classify as NEW_ANALYSIS_SAME_DOMAIN, not FOLLOW_UP.
+
+────────────────────────────────────────────
+MANDATORY REFORMULATION RULES
+────────────────────────────────────────────
+MOST IMPORTANT RULE:
+Reformulate using ONLY what the user explicitly stated.
+NEVER add hierarchy levels (l4/l5/l6/l7/l8) that user did not mention.
+NEVER add "provide analysis by l6/l7" or any product level breakdown
+unless user explicitly asked for it.
+NEVER add dimensions, filters, or groupings not present in user question.
+Keep the reformulated question as close to the original as possible.
+
+TIME REFERENCE RULE:
+Use f_y_q_data to resolve time references:
+- "current" / "latest" -> current_year / current_quarter / current_fcst
+- "previous" / "prior" -> prev_year / prev_quarter / prev_fcst
+- If user states year/quarter explicitly -> use it directly, ignore f_y_q_data.
+
+COLUMN-VALUE MAPPING IS BINDING:
+If any word or phrase in the user query matches (directly or semantically)
+a key OR a value in colvalue_mapping, you MUST:
+- Use the EXACT mapped column name and corresponding column value
+- Use ONLY values present in the mapping
+- NEVER invent or paraphrase column values
+
+HIERARCHY MAPPING:
+ONLY apply hierarchy mapping if user explicitly asks for a breakdown
+by a specific level (e.g. "by l6", "by product", "by account").
+NEVER automatically add hierarchy levels.
+
+Other rules:
+- Never use month_code — always use "month" and "Year" columns.
+- DRILLDOWN forward only: l5->l6->l7->l8->entity_name.
+  ruc_risk->l6/l7 OR attrition OR quarter. Never backwards.
+- For FOLLOW_UP: include full context including exact filter values
+  and amounts from previous answer.
+- If error in previous answer, ignore it and use current question as-is.
+- ATTRITION VALUES: Use exact DB values — 'Specific attrition',
+  'Known attrition', 'attrition provision'. Lowercase as in DB.
+- VERSION VALUES: If user stated versions in the original question,
+  preserve them exactly (e.g. "2+10 vs 1+11"). If user did not state
+  versions, say "comparing the two most recent forecast versions
+  (latest vs prior)".
+
+────────────────────────────────────────────
+OUTPUT (STRICT JSON)
+────────────────────────────────────────────
+Return ONLY:
+{
+  "reformatted_question": "<standalone question using exact column names and values — nothing extra>",
+  "status_of_query": "<NEW_ANALYSIS_SAME_DOMAIN | NEW_ANALYSIS_NEW_DOMAIN | FOLLOW_UP>",
+  "details": "Explain in 50-100 words why this is NEW or FOLLOW_UP and what the question is asking in finance domain terms."
+}
+""".strip()
