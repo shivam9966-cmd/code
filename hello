@@ -66,7 +66,8 @@ Rounding: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
 Include HAVING SUM(COALESCE("amount",0))<>0
 No LIMIT in description_sql.
 No UNION ALL in description_sql.
-ORDER BY parent col, ABS("variance") DESC or "revenue_M" DESC
+For variance queries ORDER BY: parent col, ABS(SUM(CASE WHEN version=V1...)-SUM(CASE WHEN version=V2...)) DESC
+For revenue queries ORDER BY: parent col, revenue_M DESC
 
 =====================================================
 FEW-SHOT EXAMPLES
@@ -109,7 +110,9 @@ FROM finance.forecast_data_new
 WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
 GROUP BY "l5_description","l7_description","l9_account"
 HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "l5_description","l7_description", ABS("variance") DESC
+ORDER BY "l5_description","l7_description",
+    ABS(SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
+    SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)) DESC
 
 --------------------------------------------------------
 Example 2 - SPECIFIC CLIENT REVENUE
@@ -152,7 +155,7 @@ AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
     ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
 GROUP BY "l7_description","l9_account"
 HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "l7_description","revenue_M" DESC
+ORDER BY "l7_description", SUM(COALESCE("amount",0)) DESC
 
 --------------------------------------------------------
 Example 3 - RUC/RISK REVENUE BY ATTRITION AND RUC_RISK
@@ -195,7 +198,7 @@ AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
 AND "l8_account"='Recurring Revenue'
 GROUP BY "l6_description","entity_name"
 HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "l6_description","revenue_M" DESC
+ORDER BY "l6_description", SUM(COALESCE("amount",0)) DESC
 
 =====================================================
 FINAL OUTPUT
