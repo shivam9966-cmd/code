@@ -8,17 +8,17 @@ INPUT:
 Schema: {schema}
 Question: {question}
 
-TABLE: Always use finance.forecast_data_new. Do not use FROM table, FROM data, FROM placeholder.
+TABLE: Always use finance.forecast_data_new. Do not use FROM table, FROM data, FROM <table>.
 SCHEMA: finance schema only. Double-quote ALL column names.
 OUTPUT: Return ONLY valid JSON: {"steps":["..."], "sql":"SELECT ..."}
 No explanation, comments, markdown, or raw newlines. Escape using \\n, \\t, \\\\.
 
-Avoid these keywords in SQL: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
+Forbidden SQL keywords - do not use: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
 
 META QUESTION RULE:
 If user asks "how many rows in the output/result" - return count from PREVIOUS result. Do not generate new SQL.
 
-Only filter on columns present in the database. Do not infer or add filters for dimensions not present.
+Only filter on columns that are present in the database. Do not infer or add filters for any dimension not present.
 If user asks on product level l6 filter -> l6_description
 If user asks on product level l7 filter -> l7_description
 If user asks on product level l8 filter -> l8_description
@@ -26,8 +26,8 @@ If user asks on product level l8 filter -> l8_description
 ROUNDING (only valid pattern):
 ROUND((SUM(COALESCE("amount",0)) / 1000000.0)::numeric, 2)
 - ::numeric cast comes AFTER dividing by 1000000.0
-- Avoid: ROUND(CAST(SUM(...) AS numeric), 2)
-- Avoid: ROUND(CAST(SUM(...)/1000000.0 AS numeric), 2)
+- Wrong: ROUND(CAST(SUM(...) AS numeric), 2)
+- Wrong: ROUND(CAST(SUM(...)/1000000.0 AS numeric), 2)
 - Correct: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2)
 - Display format: "$123.45M" always.
 
@@ -53,10 +53,7 @@ UNION / ORDER BY / LIMIT (POSTGRESQL RULE)
 =====================================================
 PostgreSQL does not allow ORDER BY or LIMIT directly before UNION or UNION ALL.
 
-When combining sorted/limited result sets:
-- Always wrap each SELECT in a subquery.
-- UNION/UNION ALL must operate on subqueries only.
-
+Always wrap UNION ALL in outer subquery:
 Correct:
 SELECT * FROM (
     SELECT ... GROUP BY ...
@@ -72,11 +69,10 @@ SELECT ...
 NULL IN UNION ALL:
 Do not use bare NULL in UNION ALL alongside text columns.
 Always cast: NULL::text AS "col_name", NULL::numeric AS "col_name"
-
-'Total' in UNION ALL must always be cast: 'Total'::text
+'Total' in UNION ALL always cast as: 'Total'::text
 
 VERSION COMPARISON (two versions):
-Use CASE WHEN - never IN() for both versions in one SUM.
+Use CASE WHEN - not IN() for both versions in one SUM.
 SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END) AS "latest"
 SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END) AS "previous"
 variance = latest - previous
@@ -99,8 +95,8 @@ AGGREGATION:
 Always SUM(COALESCE("amount", 0)). For top N: add HAVING SUM(COALESCE("amount",0)) <> 0.
 One SQL statement only. GROUP BY the level user specifies - never substitute levels.
 
-TOTALS ROW - include in every tabular query:
-UNION ALL with 'Total'::text label in first text column. Totals row must always be LAST.
+TOTALS ROW - for every tabular query:
+UNION ALL with 'Total'::text label in first text column. Totals row always last.
 Use sort_key: main rows sort_key=0, Total row sort_key=1, ORDER BY sort_key ASC first.
 Wrap in subquery and use sort_key to push Total to bottom.
 
@@ -111,7 +107,7 @@ Do not add LIMIT when grouping by month, quarter, ruc_risk, attrition_descriptio
 For top N + Total row: use LIMIT N+1 at outermost level (N rows + 1 Total).
 
 ORDERING:
-Default ORDER BY revenue_M DESC. For months - use CASE WHEN month ordering.
+Default ORDER BY revenue_M DESC. For months - always use CASE WHEN month ordering.
 Do not ORDER BY "month" alphabetically.
 
 PRODUCT FILTERING:
@@ -119,7 +115,7 @@ If user explicitly states a product level (e.g. "Product L7", "l7", "L7 product"
 -> filter that exact level. Never substitute.
 If user does not state a level -> filter "l8_description" by default.
 If colvalue_mapping contains the product name under a specific level
--> use that exact level from the mapping. Never override mapping.
+-> use that exact level from the mapping.
 
 REVENUE TYPE / ACCOUNT ELEMENT FILTERING:
 When user mentions "recurring revenue" or "recurring" -> filter "l8_account" = 'Recurring Revenue'.
@@ -130,16 +126,16 @@ Always use "l8_account" for this filter.
 ATTRITION FILTERING:
 If user mentions attrition type -> filter "attrition_description".
 Exact DB values (case-sensitive — use exactly as shown):
-'Known attrition'
-'Specific attrition'
-'attrition provision'
-Do not use title case. Use the exact lowercase values as shown above.
+'Known attrition' — not 'Known Attrition'
+'Specific attrition' — not 'Specific Attrition'
+'attrition provision' — not 'Attrition Provision'
+Do not use title case. Always use the exact lowercase values as shown above.
 Do not use LOWER(), UPPER(), or any case-transformation function on "attrition_description".
 
 ATTRITION NULL FILTER:
-When grouping by "attrition_description" ALONE (without ruc_risk), add:
+When grouping by "attrition_description" ALONE (without ruc_risk), always add:
 AND "attrition_description" IS NOT NULL AND "attrition_description" != '' AND TRIM("attrition_description") != ''
-Exception: When grouping by BOTH "attrition_description" AND "ruc_risk" together, omit this filter.
+Exception: when grouping by BOTH "attrition_description" AND "ruc_risk" together, do not add this filter.
 
 RUC/RISK FILTERING:
 If user mentions revenue under contract -> filter "ruc_risk" = 'RUC'.
@@ -147,14 +143,14 @@ If user mentions risk identified -> filter "ruc_risk" = 'Risk ID'.
 If user mentions risk unidentified -> filter "ruc_risk" = 'Risk UID'.
 
 RUC/RISK ATTRITION FILTER:
-When user asks for RUC, Risk ID, or Risk UID revenue:
-Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+When user asks for RUC, Risk ID, or Risk UID revenue, always add:
+AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 This applies to all three: 'RUC', 'Risk ID', 'Risk UID'.
 Correct:
 WHERE "ruc_risk" = 'RUC'
 AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 Wrong:
-WHERE "ruc_risk" = 'RUC'  (missing attrition filter)
+WHERE "ruc_risk" = 'RUC'
 
 MONTH COLUMN RULE:
 "month" column stores VARCHAR values ONLY: 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'.
@@ -166,10 +162,10 @@ Q4 -> "month" IN ('Oct','Nov','Dec')
 
 QUARTERLY AGGREGATION RULE:
 When user asks "for Q1/Q2/Q3/Q4", "by quarter", "which quarter", "quarterly":
-Do not SELECT "month" in quarterly queries.
+Do not SELECT "month" in quarterly queries — not in SELECT, not in GROUP BY.
 Always derive Quarter using CASE WHEN on "month" string values.
 
-UNION ALL ORDER BY:
+UNION ALL ORDER BY FIX:
 ORDER BY must not appear inside any individual SELECT in a UNION ALL.
 Always wrap entire UNION ALL in subquery, then ORDER BY once at the end.
 
@@ -188,58 +184,44 @@ Always return raw numeric values from SQL.
 Formatting ($123.45M) is applied by the response generator only.
 
 OUTPUT RULES:
-- Generate ONE SQL statement only.
-- 'Total' in UNION ALL must always be cast: 'Total'::text
-- Do not output duplicate queries back to back.
+- Generate ONE query only. No duplicate queries.
+- 'Total' in UNION ALL always cast as: 'Total'::text
 
-=====================================================
-GENERAL VARIANCE DETECTION
-=====================================================
+GENERAL VARIANCE DETECTION:
 If user asks "what is the variance", "revenue variance between X and Y",
 "variance between 1+11 and 2+10", "compare 1+11 and 2+10"
 with no driver keywords like "drivers","explain","components","contributing","RUC and new sales","organic revenue"
--> TYPE = GENERAL VARIANCE -> go to VARIANCE QUERY STRUCTURE section below
+-> TYPE = GENERAL VARIANCE -> use VARIANCE QUERY STRUCTURE section below
 -> Do not trigger DRIVERS QUERY for plain variance questions
 
 DRIVERS QUERY triggers only when user explicitly says:
 "drivers","explain the change","components contributing","what is driving",
 "RUC and new sales","organic revenue and new sales"
 
-=====================================================
-DRIVERS QUERY RULE
-=====================================================
-When user asks any of these (exact match or paraphrase):
-- "explain the drivers"
-- "drivers of recurring revenue"
-- "drivers of revenue growth"
-- "explain components contributing to change"
-- "components contributing to change"
-- "contributing to change"
-- "explain the change"
-- "what is driving the change"
-- "breakdown of change"
-- "RUC and new sales"
-- "organic revenue and new sales"
-- "organic revenue (RUC) and new sales (risk)"
-- "explain 2+10 vs 1+11"
-- "what changed between 2+10 and 1+11"
+DRIVERS QUERY RULE:
+When user asks any of these (exact or paraphrase):
+"explain the drivers", "drivers of recurring revenue", "drivers of revenue growth",
+"explain components contributing to change", "components contributing to change",
+"contributing to change", "explain the change", "what is driving the change",
+"breakdown of change", "RUC and new sales", "organic revenue and new sales",
+"organic revenue (RUC) and new sales (risk)", "explain 2+10 vs 1+11",
+"what changed between 2+10 and 1+11"
 
-Generate the CTE drivers query below. Do not generate monthly or simple GROUP BY queries for these.
-The SQL starts with: WITH summary AS (
+Use the CTE drivers query below. SQL starts with: WITH summary AS (
 Include "Year" filter in BOTH CTEs WHERE clause.
 Include "l8_account" = 'Recurring Revenue' filter if user mentions recurring.
 
 VERSION FOR DRIVERS QUERY:
-If user states versions explicitly (e.g. "2+10 vs 1+11") -> use them directly as string literals.
+If user states versions explicitly (e.g. "2+10 vs 1+11") -> use them directly.
 If user does not state versions -> use dynamic subqueries:
 latest = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1)
 prior  = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
 
 YEAR FOR DRIVERS QUERY:
-If user states year explicitly (e.g. "2026", "FY26") -> use it directly.
+If user states year explicitly -> use it directly.
 If user does not state year -> use (SELECT MAX("Year") FROM finance.forecast_data_new)
 
-DRIVERS QUERY TEMPLATE (substitute [V1],[V2],[Y] from user question or use dynamic subqueries):
+DRIVERS QUERY TEMPLATE (substitute [V1],[V2],[Y] from question or use dynamic subqueries):
 WITH summary AS (
     SELECT "attrition_description", "ruc_risk",
     ROUND((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS latest,
@@ -286,23 +268,19 @@ CASE row_type WHEN 'summary' THEN 0 WHEN 'customer' THEN 1 ELSE 2 END,
 CASE "ruc_risk" WHEN 'RUC' THEN 1 WHEN 'Risk ID' THEN 2 WHEN 'Risk UID' THEN 3 ELSE 4 END,
 "attrition_description", rnk
 
-Note: The template above uses '2+10', '1+11', and 2026 as examples.
-Substitute with user-stated versions/year if provided, or dynamic subqueries if not.
+Note: template uses '2+10', '1+11', 2026 as examples. Substitute from user question or use dynamic subqueries if not stated.
 
-=====================================================
-ATTRITION CHANGE QUERY
-=====================================================
-When user says "change in attrition", "explain attrition change", "explain the change in attrition",
-"attrition from X vs Y", "attrition difference":
-- Group by "attrition_description" and show version comparison (CASE WHEN) between versions.
-- Chart type: BAR CHART.
-- Do not use LOWER() or any case function on "attrition_description".
-- Do not use WITH versions CTE or CROSS JOIN versions pattern for this query type.
-- Always wrap UNION ALL in outer subquery before ORDER BY.
-- Include "Year" filter in both the main SELECT and UNION ALL Total block.
-- Use exact DB values in filter: IN ('Specific attrition', 'Known attrition', 'attrition provision')
+ATTRITION CHANGE QUERY:
+When user says "change in attrition", "explain attrition change", "attrition from X vs Y", "attrition difference":
+Group by "attrition_description" and show version comparison (CASE WHEN) between versions.
+Chart type: BAR. Do not use waterfall or line.
+Do not use LOWER() on "attrition_description".
+Do not use WITH versions CTE or CROSS JOIN versions pattern.
+Always wrap UNION ALL in outer subquery before ORDER BY.
+Always include "Year" filter in both main SELECT and UNION ALL Total block.
+Use exact DB values: IN ('Specific attrition', 'Known attrition', 'attrition provision')
 
-SQL structure:
+SQL structure for attrition change:
 SELECT * FROM (
     SELECT 0 AS sort_key, "attrition_description",
     ROUND((SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS latest,
@@ -326,19 +304,17 @@ SELECT * FROM (
     AND "Year" = 2026
 ) t ORDER BY sort_key ASC, variance DESC
 
-Note: Substitute versions/year from user question if provided, or dynamic subqueries if not.
+Note: template uses '2+10', '1+11', 2026 as examples. Substitute from user question or use dynamic subqueries if not stated.
 
 DRILLDOWN SQL:
 When user asks for l6/l7/l8 breakdown within a specific ruc_risk or attrition filter:
-- Keep all existing filters from previous query (Year, l8_account, version context).
-- Add the specific filter mentioned.
-- GROUP BY the requested product level.
-- Add LIMIT 10.
+Keep all existing filters from previous query (Year, l8_account, version context).
+Add the specific filter mentioned.
+GROUP BY the requested product level.
+Add LIMIT 10.
 
-=====================================================
-VARIANCE QUERY STRUCTURE — TWO QUERIES
-=====================================================
-For all variance questions, generate TWO queries.
+VARIANCE QUERY STRUCTURE — TWO QUERIES:
+For ALL variance questions, generate TWO queries.
 Do not generate a single total row (NULL AS group_by) for variance questions.
 
 DETECT TYPE FIRST:
@@ -398,7 +374,7 @@ Only use the no-result message when the returned DataFrame has zero rows.
 CHART DATA RULES:
 "data" must contain ONLY actual revenue or variance values (numbers like 388.25, -13.09, 5.83).
 Do not put year values, sort_key, row_type, or None in data.
-For drivers query: type=waterfall — the chart_router builds the full waterfall automatically. Return: "chart_data": {"type": "waterfall"}
+For drivers query: type=waterfall — the chart_router builds the waterfall automatically. Return: "chart_data": {"type": "waterfall"}
 For quarterly: type=line, columns=['Q1','Q2','Q3','Q4'], data=revenue per quarter.
 For monthly: type=line, data=revenue amounts per month.
 For version comparison: type=bar, data=variance values per group.
@@ -412,11 +388,6 @@ When user says "latest forecast" -> use version with highest number before +
 When user says "prior forecast" -> use version with second highest number before +
 When user says "latest vs prior" -> compare both
 
-Examples:
-If data has 1+11 and 2+10 -> latest=2+10, prior=1+11
-If data has 2+10 and 3+9 -> latest=3+9, prior=2+10
-If data has 1+11, 2+10, 3+9 -> latest=3+9, prior=2+10
-
 To find LATEST version:
 (SELECT "version" FROM finance.forecast_data_new
  ORDER BY CAST(SPLIT_PART("version",'+',1) AS INTEGER) DESC LIMIT 1)
@@ -429,12 +400,11 @@ Only generate comparison when user says "compare", "vs", "variance", "difference
 Otherwise just filter by the relevant version and show revenue only.
 Do not add variance columns unless user explicitly asks for comparison.
 
-SINGLE VALUE QUERIES:
-When user asks for a single total revenue figure (no grouping dimension):
-- SELECT just the total amount with version and year filters.
-- No UNION ALL needed.
-- Do not create a label column unless user asked for it.
-- Do not duplicate the same SELECT in a UNION ALL.
+SINGLE VALUE QUERIES: When user asks for a single total revenue figure (no grouping dimension):
+SELECT just the total amount with version and year filters.
+No UNION ALL needed — just one SELECT with one row.
+Do not create a label column unless user asked for it.
+Do not duplicate the same SELECT in a UNION ALL.
 
 PHASE 3 — SELF-VALIDATION (fix before output):
 Before outputting, verify:
@@ -451,9 +421,11 @@ Before outputting, verify:
 - RUC/Risk ID/Risk UID queries include attrition IS NULL filter
 - No duplicate SQL statements
 - ONE SQL only
+Fix any issue before returning output.
 
 MULTI-QUERY GENERATION:
-For all question types, generate queries to support Answer table + Second table + Key takeaways.
+For ALL question types, generate queries to support:
+Answer table + Second table + Key takeaways.
 
 CUSTOMER (specific client):
 Q1: GROUP BY "l7_description" WHERE "entity_name"='[client]'
@@ -492,31 +464,31 @@ Previous answer: {prev_ans}
 Decide: FOLLOW_UP or NEW.
 
 Classify as NEW if ANY of these are true:
-1. The primary metric changes — e.g. revenue -> variance, attrition -> ruc_risk, monthly -> drivers
-2. The grouping level changes — e.g. month -> quarter, l6 -> entity_name, ruc_risk -> attrition
-3. The version intent changes — e.g. single version -> comparison
-4. The topic changes completely
+1. The PRIMARY METRIC changes — e.g. revenue -> variance, attrition -> ruc_risk, monthly -> drivers
+2. The GROUPING LEVEL changes — e.g. month -> quarter, l6 -> entity_name, ruc_risk -> attrition
+3. The VERSION INTENT changes — e.g. single version -> comparison
+4. The TOPIC changes completely
 5. The question does not reference anything from the previous answer
-6. The question introduces a new dimension not present in previous question
-7. A new entity or client filter is introduced that was not in the previous question
+6. The question introduces a NEW dimension not present in previous question
+7. A new ENTITY or CLIENT filter is introduced that was not in the previous question
 
 Classify as FOLLOW_UP only if ALL of these are true:
 1. The question explicitly references previous answer ("same", "above", "that", "those", "continue", "also", "additionally")
 2. The KPI/metric is the same
-3. The grouping level is the same or drilling deeper in the same topic
+3. The grouping level is the same or drilling deeper in the SAME topic
 4. A minor filter is being added or changed
 
-Examples:
+EXAMPLES:
 - "explain drivers" then "give quarterly breakdown" -> FOLLOW_UP (same topic, drilling deeper)
-- "explain drivers" then "show me monthly revenue" -> NEW (topic changed)
+- "explain drivers" then "show me monthly revenue" -> NEW (topic changed completely)
 - "attrition breakdown" then "ruc_risk breakdown" -> NEW (different dimension)
 - "top l6" then "top l7 within that l6" -> FOLLOW_UP (drilling deeper same topic)
-- "top l6" then "show me clients" -> NEW (grouping changed)
+- "top l6" then "show me clients" -> NEW (grouping changed completely)
 
 Decision order:
 (A) Does current question reference previous answer explicitly? If NO -> NEW.
 (B) Did KPI/metric change? If YES -> NEW.
-(C) Did grouping level change to a different dimension? If YES -> NEW.
+(C) Did grouping level change to a different dimension entirely? If YES -> NEW.
 (D) Is it a drilldown of the exact same topic? If YES -> FOLLOW_UP.
 (E) Otherwise -> NEW.
 
@@ -539,8 +511,8 @@ QUICK INTRODUCTION OF COLUMN-VALUE MAPPING:
 - Inside it, you have two categories - "entity_level" and "product_level".
 - Each "key" points to a column of data and the corresponding list of values
   denotes the values of that column.
-- While reformulating the query, consider EXACT key and corresponding value given.
-  No single word missing or change is accepted.
+- While reformulating the query, make sure to consider EXACT key and corresponding value given.
+  NO single word missing or change is accepted.
 
 Column Hierarchy Mapping (AUTHORITATIVE):
 {hierarchy_mapping}
@@ -551,15 +523,16 @@ TYPES:
 - FOLLOW_UP: directly depends on and extends previous response
 
 CLASSIFICATION RULES:
-- FOLLOW_UP: current question drills deeper into the exact same topic/dimension from previous answer. Should explicitly reference previous context or be a clear continuation.
-- NEW_ANALYSIS_SAME_DOMAIN: different metric, different grouping, different dimension, new entity, new time period — even if same data.
+- FOLLOW_UP: current question drills deeper into the EXACT SAME topic/dimension from previous answer.
+  Should explicitly reference previous context or be a clear continuation.
+- NEW_ANALYSIS_SAME_DOMAIN: different metric, different grouping, different dimension,
+  new entity, new time period — even if same data.
 - When in doubt -> classify as NEW_ANALYSIS_SAME_DOMAIN, not FOLLOW_UP.
 
 REFORMULATION RULES:
 Reformulate using ONLY what the user explicitly stated.
 Do not add hierarchy levels (l4/l5/l6/l7/l8) that user did not mention.
-Do not add "provide analysis by l6/l7" or any product level breakdown
-unless user explicitly asked for it.
+Do not add "provide analysis by l6/l7" or any product level breakdown unless user explicitly asked.
 Do not add dimensions, filters, or groupings not present in user question.
 Keep the reformulated question as close to the original as possible.
 
@@ -570,9 +543,9 @@ Use f_y_q_data to resolve time references:
 - If user states year/quarter explicitly -> use it directly, ignore f_y_q_data.
 
 COLUMN-VALUE MAPPING IS BINDING:
-If any word or phrase in the user query matches a key or value in colvalue_mapping:
-- Use the exact mapped column name and corresponding column value
-- Use only values present in the mapping
+If any word or phrase in the user query matches a key OR value in colvalue_mapping:
+- Use the EXACT mapped column name and corresponding column value
+- Use ONLY values present in the mapping
 - Do not invent or paraphrase column values
 
 HIERARCHY MAPPING:
@@ -581,15 +554,16 @@ Do not automatically add hierarchy levels.
 
 Other rules:
 - Never use month_code — always use "month" and "Year" columns.
-- Drilldown forward only: l5->l6->l7->l8->entity_name. Never backwards.
+- Drilldown forward only: l5->l6->l7->l8->entity_name. ruc_risk->l6/l7 OR attrition OR quarter. Never backwards.
 - For FOLLOW_UP: include full context including exact filter values and amounts from previous answer.
 - If error in previous answer, ignore it and use current question as-is.
-- Attrition values: 'Specific attrition', 'Known attrition', 'attrition provision'. Lowercase as in DB.
-- Version values: If user stated versions in the original question, preserve them exactly. If not, say "comparing the two most recent forecast versions (latest vs prior)".
+- ATTRITION VALUES: Use exact DB values — 'Specific attrition', 'Known attrition', 'attrition provision'.
+- VERSION VALUES: If user stated versions in the original question, preserve them exactly.
+  If user did not state versions, say "comparing the two most recent forecast versions (latest vs prior)".
 
-OUTPUT (JSON only):
+Return ONLY:
 {
-  "reformatted_question": "<standalone question using exact column names and values>",
+  "reformatted_question": "<standalone question using exact column names and values — nothing extra>",
   "status_of_query": "<NEW_ANALYSIS_SAME_DOMAIN | NEW_ANALYSIS_NEW_DOMAIN | FOLLOW_UP>",
   "details": "Explain in 50-100 words why this is NEW or FOLLOW_UP and what the question is asking in finance domain terms."
 }
@@ -605,31 +579,38 @@ Previous answer: {prev_ans}
 
 CLASSES:
 - NEW_ANALYSIS_SAME_DOMAIN: Independent request in the same analytics domain that explicitly restates entity, metric, or time.
-- NEW_ANALYSIS_NEW_DOMAIN: Independent request that changes analysis domain (e.g., verification -> variance, BLR -> FLUX, BLR -> FORECAST).
+- NEW_ANALYSIS_NEW_DOMAIN: Independent request that changes analysis domain (e.g., verification to variance, BLR to FLUX, BLR to FORECAST).
 - FOLLOW_UP: Depends on prior context or output and does NOT restate entity/metric/time.
 
-DECISION RULES (apply in order):
+DECISION RULES (in priority order):
 1) If the current question can be answered WITHOUT the previous output -> NOT a FOLLOW_UP. Classify as NEW.
-2) If the current question explicitly states any of:
+
+2) If the current question explicitly states ANY of:
    - a version (e.g. '1+11', '2+10', '3+9')
    - a time period (e.g. Q1, FY26, 2026, a month)
    - an entity or client name
    - a product level (l6/l7/l8)
    - a metric (revenue, attrition, ruc, risk, drivers)
    -> NEW_ANALYSIS_SAME_DOMAIN, even if wording is similar to previous.
+
 3) FOLLOW_UP only if ALL of these are true:
    - The question is short or incomplete on its own
    - It cannot be answered without the previous output
-   - It does not restate any entity, metric, version, or time
+   - It does NOT restate any entity, metric, version, or time
    - It uses words like "same", "above", "that", "those", "also", "additionally", "continue"
-4) A new entity or client filter introduced that was not in the previous question -> always NEW_ANALYSIS_SAME_DOMAIN.
-5) Keywords like "explain", "drivers", "by", "breakdown", "compare", "variance" alone do not signal FOLLOW_UP.
-6) If intent shifts across domains (BLR, FLUX, FORECAST) -> NEW_ANALYSIS_NEW_DOMAIN.
+
+4) A new ENTITY or CLIENT filter introduced that was not in the previous question -> always NEW_ANALYSIS_SAME_DOMAIN.
+
+5) Keywords like "explain", "drivers", "by", "breakdown", "compare", "variance" alone do NOT signal FOLLOW_UP.
+   They only signal FOLLOW_UP when combined with rule 3 above.
+
+6) If intent shifts across domains (BLR to FLUX to FORECAST) -> NEW_ANALYSIS_NEW_DOMAIN.
 
 REPORT CATEGORY:
 - BLR Report:    revenue / opex / EBITDA verification
 - FLUX Analysis: deltas, movements, drivers for BLR/FLUX data
-- FORECAST:      any question about forecast versions (1+11, 2+10, etc.), recurring revenue, attrition, RUC, risk, drivers, client, entity
+- FORECAST:      any question about forecast versions (1+11, 2+10, etc.), recurring revenue,
+                 attrition, RUC, risk, drivers of forecast change, client, entity
 
 If BLR      -> analysis_type = blr_audit,  dataset = BLR
 If FLUX     -> analysis_type = variance,   dataset = FLUX
@@ -637,28 +618,14 @@ If FORECAST -> analysis_type = forecast,   dataset = FORECAST
 Else        -> report_category = NONE, analysis_type = null, dataset = null
 
 EXAMPLES:
-Prev: "Revenue for account XYZ in FY25" / Curr: "Revenue for account ABC in FY25"
--> NEW_ANALYSIS_SAME_DOMAIN (different entity)
+Prev: "Revenue for account XYZ in FY25" / Curr: "Revenue for account ABC in FY25" -> NEW_ANALYSIS_SAME_DOMAIN (different entity)
+Prev: "Revenue for account XYZ in FY25" / Curr: "Breakdown by region" -> FOLLOW_UP (short, no restatement)
+Prev: "Revenue for account XYZ in FY25" / Curr: "Revenue variance YoY for account XYZ" -> NEW_ANALYSIS_NEW_DOMAIN (domain shift)
+Prev: "explain drivers recurring 1+11 vs 2+10" / Curr: "explain drivers Q1 recurring 1+11 vs 2+10" -> NEW (Q1 stated explicitly)
+Prev: "explain drivers recurring 1+11 vs 2+10" / Curr: "show me the same for Q2" -> FOLLOW_UP (references "same")
+Prev: "explain drivers recurring 1+11 vs 2+10" / Curr: "which clients are driving the RUC variance?" -> FOLLOW_UP (short drilldown)
 
-Prev: "Revenue for account XYZ in FY25" / Curr: "Breakdown by region"
--> FOLLOW_UP (short, incomplete, no restatement)
-
-Prev: "Revenue for account XYZ in FY25" / Curr: "Revenue variance YoY for account XYZ"
--> NEW_ANALYSIS_NEW_DOMAIN (domain shifted from BLR to FLUX)
-
-Prev: "explain the drivers of recurring revenue between 1+11 and 2+10"
-Curr: "explain the drivers of Q1 recurring revenue between 1+11 and 2+10"
--> NEW_ANALYSIS_SAME_DOMAIN (new time period Q1 stated)
-
-Prev: "explain the drivers of recurring revenue between 1+11 and 2+10"
-Curr: "show me the same for Q2"
--> FOLLOW_UP (references "same", no restatement)
-
-Prev: "explain the drivers of recurring revenue between 1+11 and 2+10"
-Curr: "which clients are driving the RUC variance?"
--> FOLLOW_UP (short drilldown, depends on previous)
-
-OUTPUT (JSON only):
+Return ONLY JSON:
 {
   "query_status": "<NEW_ANALYSIS_SAME_DOMAIN | NEW_ANALYSIS_NEW_DOMAIN | FOLLOW_UP>",
   "report_category": "<BLR Report | FLUX Analysis | FORECAST | NONE>",
@@ -677,33 +644,30 @@ Rules:
 - Keep ALL existing filters from previous SQL (Year, l8_account, version context).
 - Only change GROUP BY/SELECT dimensions based on current question.
 - Do not use integer months. Always use VARCHAR: 'Jan','Feb','Mar' etc.
-- Attrition values: 'Specific attrition', 'Known attrition', 'attrition provision'.
+- ATTRITION VALUES: Use exact DB values — 'Specific attrition', 'Known attrition', 'attrition provision'.
   Do not use LOWER() or any case function on "attrition_description".
-- Rounding: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2). Do not use CAST.
-- LIMIT 10 for l6/l7/l8/entity_name grouping. No LIMIT for quarter/month/ruc_risk/attrition grouping.
-- Include "Year" filter in every CTE and subquery block.
+- ROUNDING: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2). Do not use CAST.
+- LIMIT 10 for l6/l7/l8/entity_name grouping. NO LIMIT for quarter/month/ruc_risk/attrition grouping.
+- Always include "Year" filter in every CTE and subquery block.
 - Column aliases for version comparison: always use "latest" and "previous".
-- NULL in UNION ALL: always cast NULL::text or NULL::numeric. Never bare NULL.
+- NULL in UNION ALL: always cast NULL::text or NULL::numeric. No bare NULL.
 - 'Total' in UNION ALL: always cast 'Total'::text.
-- Generate ONE SQL statement only.
+- Generate ONE query only.
 
 RUC/RISK ATTRITION FILTER:
 If follow-up filters on ruc_risk = 'RUC', 'Risk ID', or 'Risk UID':
 Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 
 VERSION HANDLING:
-If previous SQL or current question contains explicit version values (e.g. '2+10', '1+11'):
--> Use those exact values directly. Do not replace with subqueries.
+If previous SQL or current question contains explicit version values -> use those exact values directly.
 If no explicit versions stated:
--> Use dynamic subqueries:
 latest = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1)
 prior  = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
 
-QUARTERLY BREAKDOWN OF DRIVERS (followup):
+QUARTERLY BREAKDOWN OF DRIVERS FOLLOWUP:
 When user asks "quarterly breakdown of variance" or "break by quarter" as followup to drivers query:
-Use a CTE that fetches BOTH quarterly summary AND top 3 customers per description+quarter.
+Use a CTE with BOTH quarterly summary AND top 3 customers per description+quarter.
 row_type = 'summary' for quarterly rows, row_type = 'customer' for entity rows.
-
 SQL template:
 WITH quarterly_summary AS (
     SELECT
@@ -753,12 +717,12 @@ rnk
 
 Note: Substitute versions/year from context if different from template.
 
-DRILLDOWN FOLLOW-UP SQL:
+DRILLDOWN FOLLOW-UP SQL RULE:
 When follow-up asks for l6/l7/l8 breakdown within a specific ruc_risk or attrition filter:
-- Add the specific filter to WHERE clause.
-- GROUP BY the requested product level.
-- Use version comparison CASE WHEN if previous query compared versions.
-- Add LIMIT 10.
+Add the specific filter to WHERE clause.
+GROUP BY the requested product level.
+Use version comparison CASE WHEN if previous query compared versions.
+Add LIMIT 10.
 
 SIMPLE QUARTERLY FOLLOW-UP:
 When user asks "which quarter shows highest" or "by quarter":
@@ -771,67 +735,65 @@ CHART TYPE RULE:
 - Variance between two versions -> BAR CHART
 - Waterfall only when "waterfall", "bridge", "walk" explicitly mentioned
 
-Output: Return ONLY JSON: {"sql": "SELECT ..."}
+Return ONLY JSON: {"sql": "SELECT ..."}
 No explanation, comments, markdown, raw newlines.
 Table: finance.forecast_data_new only.
 Totals row via UNION ALL. LIMIT at very end only.
-Rounding: ROUND((SUM(COALESCE("amount",0)) / 1000000.0)::numeric, 2)
+ROUNDING: ROUND((SUM(COALESCE("amount",0)) / 1000000.0)::numeric, 2)
 """.strip()
 
 
 forecast_sql_query_fixing_prompt = """
-Fix syntax/code issues in the following SQL for PostgreSQL. Do not change meaning or filters.
-If the input SQL already has correct month string format like "month" IN ('Jan','Feb','Mar'), do not change it. Only fix actual syntax errors. Do not regenerate a working SQL from scratch.
+Fix syntax/code issues in the following SQL for PostgreSQL. Do NOT change meaning or filters.
+If the input SQL already has correct month string format like "month" IN ('Jan','Feb','Mar'), do not change it.
+Only fix actual syntax errors. Never regenerate a working SQL from scratch.
 
-Return ONLY JSON: {"sql": "<fixed_sql>"}
-No explanation, comments, markdown, raw newlines.
-One SQL statement only. Give complete SQL.
-No date columns or DATE_TRUNC. Use "month" and "Year" columns only for time filtering.
-Avoid these keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
-
-FIXES TO APPLY:
+Rules:
+- Return ONLY JSON: {"sql": "<fixed_sql>"}
+- No explanation, comments, markdown, raw newlines.
+- One SQL statement only. Give complete SQL.
+- No date columns or DATE_TRUNC. Use "month" and "Year" columns only for time filtering.
+- No dangerous keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
 - Column name fixes: "amount" not "Value", "version" not "Scenario", "entity_name" not "Client Name", "ruc_risk" not "RUC / Risk".
 - Year column is uppercase "Year" not "year".
-- Rounding: Replace ROUND(CAST(...AS numeric), 2) with ROUND((...)::numeric, 2). ::numeric AFTER closing paren.
-- Alias fix: Replace "prior_forecast" alias with "previous", replace "latest_forecast" alias with "latest".
-- Attrition case fix: Fix to exact DB values: 'Specific attrition', 'Known attrition', 'attrition provision'. Remove any LOWER() or UPPER() wrapping on "attrition_description".
-- Version fix: If SQL has l4_description or l5_description filters with values like '2' or '10' from splitting a version string, replace with "version" = '2+10' or "version" = '1+11'.
-- Version IN fix: If SQL has WHERE "version" IN ('2+10','1+11') or OR version pattern, use CASE WHEN instead.
-- UNION ALL fix: If ORDER BY appears before UNION ALL, wrap entire query in subquery. Only ONE ORDER BY at the very end.
-- UNION ALL ORDER BY CASE fix: Wrap the entire UNION ALL in SELECT * FROM (...) sub and put ORDER BY after.
+- ROUNDING FIX: Replace ROUND(CAST(...AS numeric), 2) with ROUND((...)::numeric, 2). ::numeric AFTER closing paren.
+- ALIAS FIX: Replace "prior_forecast" alias with "previous", replace "latest_forecast" alias with "latest".
+- ATTRITION CASE FIX: Fix to exact DB values: 'Specific attrition', 'Known attrition', 'attrition provision'. Remove LOWER()/UPPER().
+- VERSION FIX: If SQL has l4_description or l5_description filters with values like '2' or '10', replace with "version" = '2+10' or "version" = '1+11'.
+- VERSION IN FIX: If SQL has WHERE "version" IN ('2+10','1+11'), use CASE WHEN instead.
+- UNION ALL FIX: If ORDER BY appears before UNION ALL, wrap entire query in subquery. Only ONE ORDER BY at the very end.
+- UNION ALL ORDER BY CASE FIX: Wrap entire UNION ALL in SELECT * FROM (...) sub and put ORDER BY after.
   Wrong: SELECT ... UNION ALL SELECT ... ORDER BY CASE row_type WHEN ...
   Right: SELECT * FROM (SELECT ... UNION ALL SELECT ...) sub ORDER BY CASE row_type WHEN ...
-- NULL type fix: NULL in UNION ALL alongside text -> NULL::text. NULL alongside numeric -> NULL::numeric.
-- Total cast fix: 'Total' in UNION ALL -> 'Total'::text always.
-- Limit inside UNION ALL fix: Remove ORDER BY and LIMIT from ALL inner SELECTs. Place single LIMIT at outermost level only. For top N + Total: LIMIT N+1.
-- CTE fix: If input SQL contains WITH summary AS (...), preserve CTE structure exactly.
-- Year filter fix: If "Year" filter missing from any CTE/subquery WHERE clause, add it. Use (SELECT MAX("Year") FROM finance.forecast_data_new) if year unknown.
-- RANK() fix: DESC should be INSIDE OVER() clause.
-- Limit: LIMIT 10 for l6/l7/l8/entity_name. Do not add LIMIT for month/quarter/ruc_risk/attrition.
-- Month type fix: Replace "month" IN (1,2,3) with "month" IN ('Jan','Feb','Mar') etc.
-- Formatting fix: Remove '$'||...||'M' string formatting. Return raw numeric values only.
-- Duplicate SQL fix: If input contains two identical SELECT statements back to back, keep ONLY the first one.
+- NULL TYPE FIX: NULL alongside text -> NULL::text. NULL alongside numeric -> NULL::numeric. No bare NULL.
+- TOTAL CAST FIX: 'Total' in UNION ALL -> 'Total'::text always.
+- LIMIT INSIDE UNION ALL FIX: Remove ORDER BY and LIMIT from ALL inner SELECTs. Place single LIMIT at outermost level only. For top N + Total: LIMIT N+1.
+- CTE FIX: If input SQL contains WITH summary AS (...), preserve CTE structure exactly. Never replace with different structure.
+- YEAR FILTER FIX: If "Year" filter missing from any CTE/subquery WHERE clause, add it. Use (SELECT MAX("Year") FROM finance.forecast_data_new) if year unknown.
+- RANK() FIX: DESC should be INSIDE OVER() clause.
+- LIMIT: LIMIT 10 for l6/l7/l8/entity_name. Do not add LIMIT for month/quarter/ruc_risk/attrition.
+- MONTH TYPE FIX: Replace "month" IN (1,2,3) with "month" IN ('Jan','Feb','Mar') etc.
+- FORMATTING FIX: Remove '$'||...||'M' string formatting. Return raw numeric values only.
+- DUPLICATE SQL FIX: If input contains two identical SELECT statements back to back, keep ONLY the first one.
 
 ENTITY NAME FIX:
 "entity_name" is a CLIENT/COMPANY name column — never a product column.
 Do not move "entity_name" filter values to "l8_description" or any product column.
-Do not replace WHERE "entity_name" = '...' with WHERE "l8_description" = '...'.
 If SQL correctly uses "entity_name" = 'The Bank of New York Mellon' -> keep it exactly as-is.
 
-Version IN fix:
+VERSION IN FIX:
 Replace ("version" = 'x' OR "version" = 'y') with CASE WHEN pattern.
 
-Cast rounding fix:
+CAST ROUNDING FIX:
 Replace ROUND(CAST(x AS numeric), 2) with ROUND((x)::numeric, 2) everywhere.
 
-Year filter fix:
-If "Year" filter missing from any WHERE clause -> add
+YEAR FILTER FIX:
+If "Year" filter missing from any WHERE clause, add:
 AND "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
 
-Empty result prevention:
+EMPTY RESULT PREVENTION:
 If attrition values are lowercase -> fix to exact casing.
-If entity_name filter uses partial name -> keep as-is.
-If product level is wrong (l8 when user said l7) -> fix to correct level.
+If entity_name filter uses partial name -> keep as-is, do not modify.
 
 Input SQL: {sql}
 """.strip()
@@ -840,23 +802,23 @@ Input SQL: {sql}
 forecast_sql_regeneration_prompt = """
 User query: {query}
 Schema: {schema}
-Previous SQL returned no data. Generate new SQL for same intent.
+Previous SQL returned NO DATA. Generate NEW SQL for same intent.
 
 VERSION HANDLING:
-If user query contains explicit version values (e.g. '2+10', '1+11') -> use them directly.
+If user query contains explicit version values -> use them directly.
 If not -> detect dynamically:
 latest = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1)
 prior  = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
 
 YEAR HANDLING:
-If user query contains explicit year (e.g. "2026", "FY26") -> use it directly.
+If user query contains explicit year -> use it directly.
 If not -> use (SELECT MAX("Year") FROM finance.forecast_data_new)
-Include "Year" filter in every CTE and subquery block.
+Always include "Year" filter in every CTE and subquery block.
 
-Revenue type: If query mentions recurring -> "l8_account" = 'Recurring Revenue'.
+REVENUE TYPE: If query mentions recurring -> "l8_account" = 'Recurring Revenue'.
 If non-recurring -> "l8_account" = 'Non-Recurring Revenue'. Never use l6_description for this.
-Month: "month" column is VARCHAR. Always use 'Jan','Feb' etc. Never integers.
-Attrition values: Do not use LOWER(). Exact DB values: 'Specific attrition', 'Known attrition', 'attrition provision'.
+MONTH RULE: "month" column is VARCHAR. Always use 'Jan','Feb' etc. No integers.
+ATTRITION VALUES: Do not use LOWER(). Exact DB values: 'Specific attrition', 'Known attrition', 'attrition provision'.
 Column aliases: always use "latest" and "previous" for version comparison columns.
 NULL in UNION ALL: always cast NULL::text or NULL::numeric.
 'Total' in UNION ALL: always cast 'Total'::text.
@@ -865,12 +827,14 @@ RUC/RISK ATTRITION FILTER:
 If query involves ruc_risk = 'RUC', 'Risk ID', or 'Risk UID':
 Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 
-Return ONLY JSON: {"steps":["..."], "sql":"SELECT ..."}
-finance.forecast_data_new only. Double-quote ALL column names.
-Do not reuse previous SQL. Loosen filters carefully without losing intent.
-Rounding: ROUND((SUM(COALESCE("amount",0)) / 1000000.0)::numeric, 2)
-No dangerous keywords. No DATE_TRUNC. One SQL statement only.
-Year column is uppercase: "Year" not "year".
+Rules:
+- Return ONLY JSON: {"steps":["..."], "sql":"SELECT ..."}
+- finance.forecast_data_new only. Double-quote ALL column names.
+- Do not reuse previous SQL. Loosen filters carefully without losing intent.
+- ROUNDING: ROUND((SUM(COALESCE("amount",0)) / 1000000.0)::numeric, 2)
+- No dangerous keywords. No DATE_TRUNC. One SQL statement only.
+- Version values: detect from question or use dynamic subquery. Never guess.
+- Year column is uppercase: "Year" not "year".
 """.strip()
 
 
@@ -890,37 +854,41 @@ JSON OUTPUT STRUCTURE:
     "answer_by_model": "<HTML string>"
 }
 
-FIRST LINE (always include):
+FIRST LINE (always, no exceptions):
 Start answer_by_model with:
 <b>Answer generated for: Capital Markets Forecast | {{version_context}} | {{attrition_type}} | {{ruc_risk_type}}</b>
-
 Derive version_context from SQL:
-- If SQL compares two versions -> show both actual version values e.g. "2+10 vs 1+11"
-- If SQL filters single version -> show actual version value e.g. "2+10 (Latest Forecast)" or "1+11 (Prior Forecast)"
-- Always show the actual version string from SQL, not generic "Latest" or "Prior" alone.
-
-Derive attrition_type from attrition_description filter in SQL:
-Known Attrition / Specific Attrition / Attrition Provision / All Attrition Types.
-
+- If SQL compares two versions -> "Latest vs Prior Forecast"
+- If SQL filters single version -> "Latest Forecast" or "Prior Forecast"
+- Do not show raw version strings like '1+11' or '2+10' in the header.
+Derive attrition_type from attrition_description filter in SQL (Known Attrition, Specific Attrition, Attrition Provision, or All Attrition Types).
 Derive ruc_risk_type from "ruc_risk" filter in SQL:
-- 'RUC' -> 'RUC (Revenue Under Contract)'
-- 'Risk ID' -> 'Risk ID (Risk Identified)'
-- 'Risk UID' -> 'Risk UID (Risk Unidentified)'
-- no filter -> 'All RUC / Risk Types'
+- If filtered on 'RUC' -> show 'RUC (Revenue Under Contract)'
+- If filtered on 'Risk ID' -> show 'Risk ID (Risk Identified)'
+- If filtered on 'Risk UID' -> show 'Risk UID (Risk Unidentified)'
+- If no ruc_risk filter -> show 'All RUC / Risk Types'
 
-ANSWER STRUCTURE (follow this order):
+ANSWER STRUCTURE (this order, no exceptions):
 Line 1: <b>Answer generated for: ...</b>
-Line 2: One-liner with key number only.
+Line 2: One-liner — single sentence with key number only.
 Line 3: Full HTML table.
 Line 4: <b>Key Takeaways</b> section.
-Line 5: <br><b>Summary</b><br>[2 sentences max] — always on a new line after Key Takeaways.
-Do not add follow-up questions in the response.
+Line 5: <br><b>Summary</b><br>[2 sentences max] — always start on a NEW LINE after Key Takeaways.
+
+Rules:
+- Do not change this order.
+- Summary always starts with <br><b>Summary</b> to ensure new line.
+- One-liner should contain the total/key metric value from the data.
+- Table comes immediately after the one-liner.
+- Do not add follow-up questions in the response.
 
 HTML TABLE RULES:
+- Clean HTML table only.
 - Apply color to ALL numeric cells:
   Positive (> 0): <td style="color:green">$X.XXM</td>
   Negative (< 0): <td style="color:red">$X.XXM</td>
-- Use double quotes in style attributes.
+  Do not leave any numeric cell without color styling.
+- Use double quotes in style attributes — not single quotes.
 - Use $M formatting only if SQL output is in millions.
 - Totals row labeled "Total", always last.
 - Do not mention filtering logic or implementation details.
@@ -931,7 +899,7 @@ VERSION DISPLAY IN TABLE:
 When SQL compares two versions, show actual version values in table headers.
 Format: "[version] ($M)" e.g. "2+10 ($M)" and "1+11 ($M)"
 Do not show just "Latest Forecast ($M)" or "Previous Forecast ($M)" in table headers.
-Always show actual version string from SQL in column headers.
+Show actual version string from SQL in column headers.
 
 VARIANCE TABLE COLUMNS:
 When user asks variance between two scenarios, table should have these 4 columns:
@@ -939,66 +907,107 @@ When user asks variance between two scenarios, table should have these 4 columns
 Example: l5_description | 2+10 ($M) | 1+11 ($M) | Variance ($M) | Variance %
 Do not show only variance without both scenario values.
 
-QUARTERLY BREAKDOWN DETECTION:
+QUARTERLY BREAKDOWN DETECTION RULE:
 If the SQL result contains BOTH a "quarter" column AND a "description" column AND a "row_type" column:
-- Display as 4 SEPARATE HTML tables — one per quarter.
-- Do not display as one combined table.
-- Table 1: all rows where quarter = 'Q1' with header <h4>Q1 Breakdown</h4>
-- Table 2: all rows where quarter = 'Q2' with header <h4>Q2 Breakdown</h4>
-- Table 3: all rows where quarter = 'Q3' with header <h4>Q3 Breakdown</h4>
-- Table 4: all rows where quarter = 'Q4' with header <h4>Q4 Breakdown</h4>
-- Each table: row_type='summary' rows only. Cols: Description, [V1]($M), [V2]($M), Variance($M), Variance%.
-- Row order: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
-- All 4 tables must appear. Apply green/red color to all numeric cells.
-- This rule overrides all other table display rules.
+Display as 4 SEPARATE HTML tables — one per quarter. Do not use one combined table.
+Table 1: all rows where quarter = 'Q1' with header <h4>Q1 Breakdown</h4>
+Table 2: all rows where quarter = 'Q2' with header <h4>Q2 Breakdown</h4>
+Table 3: all rows where quarter = 'Q3' with header <h4>Q3 Breakdown</h4>
+Table 4: all rows where quarter = 'Q4' with header <h4>Q4 Breakdown</h4>
+Each table: row_type='summary' rows only. Cols: Description, Latest($M), Previous($M), Variance($M), Variance%.
+Row order in each table: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
+All 4 tables should appear — never show only Q1.
+Apply green/red color to all numeric cells in all 4 tables.
+Apply this rule before all other table display rules.
 
 KEY TAKEAWAYS — QUARTERLY BREAKDOWN:
-- Write Key Takeaways for ALL 4 quarters.
-- One bullet per quarter summarizing the key movement.
-- Format: "• <b>Q1:</b> [key insight] <span style="color:green/red"><b>+/-$X.XXM</b></span><br>"
-- End with <b>Recommended focus:</b>
+When showing quarterly breakdown:
+Write Key Takeaways for ALL 4 quarters — not just Q1.
+One bullet per quarter summarizing the key movement that quarter.
+Format: "• <b>Q1:</b> [key insight] <span style="color:green/red"><b>+/-$X.XXM</b></span><br>"
+End with <b>Recommended focus:</b>
 
-FLAT TABLE RULE (SQL has both attrition_description + ruc_risk columns):
-- Show ONLY row_type = 'summary' rows in the HTML table.
-- Show ONLY 5 columns: Description, [V1]($M), [V2]($M), Variance($M), Variance%.
-- Description: attrition rows -> attrition_description value; blank/null attrition -> ruc_risk value.
-- Row order: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition, Total.
-- row_type = 'total_row' -> display as 'Total' row at the very bottom.
-- Take Total row values directly from row_type = 'total_row' in SQL result. Do not recalculate.
-- Do not show row_type = 'customer' rows in the HTML table.
+FLAT TABLE RULE:
+When SQL result has both "attrition_description" and "ruc_risk" columns together:
+Show ONLY row_type = 'summary' rows in the HTML table.
+Show ONLY 5 columns: Description, Latest Forecast ($M), Previous Forecast ($M), Variance ($M), Variance %.
+Description column:
+   - attrition rows -> show attrition_description value.
+   - blank/null attrition rows -> show ruc_risk value (RUC, Risk ID, Risk UID).
+Row order: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition, Total.
+row_type = 'total_row' -> display as 'Total' row at the very bottom.
+Take Total row values directly from row_type = 'total_row' in SQL result. Do not recalculate.
+Do not show row_type = 'customer' rows in the HTML table.
 
-KEY TAKEAWAYS — DRIVERS QUERY (SQL has row_type='summary' and row_type='customer'):
+KEY TAKEAWAYS — DRIVERS QUERY (when SQL has row_type='summary' and row_type='customer'):
+Always show customer breakdown for every row:
 Step 1: Find all rows where row_type = 'summary'.
 Step 2: For each summary row, find matching customer rows (same attrition_description + ruc_risk).
 Step 3: Pick top 3 customer rows by ABS(variance).
 Step 4: Write one bullet per Description row. Format:
 "• <b>[Description]</b> variance of <span style="color:green"><b>+$X.XXM</b></span> was mainly driven by [entity1] (<span style="color:green"><b>+$X.XXM</b></span>), [entity2] (<span style="color:red"><b>-$X.XXM</b></span>), and [entity3] (<span style="color:green"><b>+$X.XXM</b></span>).<br>"
-- Always show top 3 contributors for every row.
-- Each Description row = ONE bullet starting with bullet point.
-- Use <br> after each bullet.
-- Green for positive amounts, red for negative.
+Always show top 3 contributors for every row.
+Each Description row = ONE bullet starting with bullet point.
+Use <br> after each bullet to put them on separate lines.
+Green for positive amounts, red for negative.
 Step 5: Order: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
 Step 6: End with: "<b>Recommended focus:</b> [one actionable CFO-level sentence]"
+
+KEY TAKEAWAYS — VARIANCE RESPONSE (GENERAL/CUSTOMER/PRODUCT/RUC/RISK/ATTRITION/ACCOUNT):
+DETECT TYPE from question:
+GENERAL         -> main table=L5  | drill to L9 (l9_account)
+CUSTOMER        -> main table=L7  | drill to L9 (l9_account)
+PRODUCT + L5    -> main table=L6  | drill to l9_account
+PRODUCT + other -> no drilldown   | drill to l9_account only
+RUC/ORGANIC/RISK/ATTRITION/ACCOUNT -> main table=L6 | drill to l9_account
+TOP N CUSTOMER  -> main table=entity_name | drill to l9_account
+
+FIRST LINE: "Revenue variance between [latest] and [prior] is $[total]M"
+
+MAIN TABLE (QUERY 1): [level col] | [V1]($M) | [V2]($M) | Variance($M)
+80% RULE: Sort by ABS(variance) DESC. Show rows until cumulative>=80% of total. MAX 5 rows. Total at bottom.
+
+CASCADING 80% KEY TAKEAWAYS (QUERY 2):
+For each key driver (80% set only):
+  Filter QUERY 2 for that driver. Sort by ABS(variance) DESC.
+  Pick l9_account items until cumulative ABS(variance)>=80% of driver's variance. Max 5, min 2.
+  Format: "[Driver] ($XM variance): [Account A] ($XM), [Account B] ($XM), [Account C] ($XM)"
+Do not show takeaways for non-key drivers. Max 5, min 2 per driver.
+
+TOP N CUSTOMER KEY TAKEAWAYS:
+For each client in table (ALL N clients, no 80% rule on main table):
+  Show top 3 l9_account by revenue for that client.
+  Format: "[Client] ($XM): accounts are [l9_account A] ($XM), [l9_account B] ($XM)"
+
+KEY TAKEAWAYS — ALL OTHER QUERIES (no row_type column):
+Write like a CFO analyst — forward-looking, risk-aware, actionable. Max 4 bullets.
+Always wrap variance values in color spans.
+End with: "<b>Recommended focus:</b> [specific action]"
+
+SUMMARY RULE:
+Summary always starts on a new line, separated from Key Takeaways.
+Format: <br><b>Summary</b><br>[2 sentences max]
+Do not run Summary on the same line as the last Key Takeaway bullet.
 
 ANSWER/DRILL DOWN STRUCTURE:
 Detect question type and apply this structure:
 
 GENERAL VARIANCE:
-- Answer table: L5 grouped | [V1]($M) | [V2]($M) | Variance($M) | Variance%
-- Second table: L7 products for L5s contributing 80% of variance
-  80% rule: pick L5s until cumulative ABS(variance) >= 80% of total
+- Answer table: L5 grouped | V1($M) | V2($M) | Variance($M) | Variance%
+- Second table (Key Takeaways): L7 products for L5s contributing 80% of variance
+  80% RULE: pick L5s until cumulative ABS(variance) >= 80% of total
   For each qualifying L5: show L7 breakdown
 - Key Takeaways bullets: L9 accounts for each L7 in second table
-  80% rule: pick L9s until cumulative >= 80% of that L7's variance
+  80% RULE: pick L9s until cumulative >= 80% of that L7's variance
 
 CUSTOMER question (specific client):
-- Answer table: L7 products for that client | revenue_M or variance
+- Answer table: L7 products for that client | revenue_M
 - Key Takeaways bullets: L9 accounts for each L7, 80% contribution rule
 
 TOP N CUSTOMERS question:
 - Answer table: Top N entity_name | version($M) or revenue_M
 - Second table: L7 products for clients contributing 80% of total revenue
-  80% rule: pick clients until cumulative >= 80% of total
+  80% RULE: pick clients until cumulative >= 80% of total
   For each qualifying client: show L7 breakdown
 - Key Takeaways bullets: L9 accounts for each L7 in second table, 80% rule
 
@@ -1032,7 +1041,7 @@ ACCOUNT question (recurring/non-recurring/any):
 
 80% RULE (applies everywhere):
 Sort by ABS(value) DESC. Pick rows until cumulative >= 80% of total.
-Max 5 rows in any table. Min 2 rows always.
+MAX 5 rows in any table. MIN 2 rows always.
 Do not show second table rows for items outside the 80% set.
 
 SECOND TABLE FORMAT:
@@ -1045,24 +1054,14 @@ For each L7 in second table:
 Max 5 L9 per L7, min 2. 80% contribution rule applies.
 End with: <b>Recommended focus:</b> [CFO-level action]
 
-KEY TAKEAWAYS — ALL OTHER QUERIES (no row_type column):
-- Write like a CFO analyst — forward-looking, risk-aware, actionable. Max 4 bullets.
-- Always wrap variance values in color spans.
-- End with: "<b>Recommended focus:</b> [specific action]"
-
-SUMMARY RULE:
-- Summary always starts on a new line, separated from Key Takeaways.
-- Format: <br><b>Summary</b><br>[2 sentences max]
-
 CHART DATA RULES:
-- For drivers query: return only "chart_data": {{"type": "waterfall"}}
+- For drivers query: chart_router builds the waterfall automatically. Return only: "chart_data": {{"type": "waterfall"}}
 - For quarterly: type=line, columns=['Q1','Q2','Q3','Q4'], data=revenue per quarter.
 - For monthly: type=line, data=revenue Jan-Dec order.
 - For version comparison: type=bar, data=variance per group.
 - Do not put year values, sort_key, row_type, or None in data output.
-- Chart column labels: use actual version strings e.g. "2+10", "1+11".
+- Chart labels: use actual version strings e.g. "2+10", "1+11" not "Latest"/"Previous".
 """.strip()
-
 
 forecast_followup_questions_prompt = """
 Generate EXACTLY 3 follow-up questions.
@@ -1076,16 +1075,15 @@ Rules:
 - Use EXACT names and figures from the answer data. Do not use placeholders.
 - Q1, Q2, Q3 should each reference a DIFFERENT item from the answer.
 - Questions should be directly answerable from finance.forecast_data_new.
-- Do not reference specific version strings in follow-up questions.
-  Use "latest vs prior forecast" or "latest forecast" instead.
+- Do not reference specific version strings. Use "latest vs prior forecast" or "latest forecast" instead.
 
-DRILL DOWN HIERARCHY (forward only):
+DRILL DOWN HIERARCHY (FORWARD ONLY):
 l4 -> l5 -> l6 -> l7 -> l8 -> entity_name
 ruc_risk -> l6/l7 product level OR attrition_description OR quarter
 attrition_description -> entity_name OR l7/l8 product level
 quarter/month -> entity_name OR l6/l7 product level
 
-IF DRIVERS QUERY (answer has both attrition_description and ruc_risk grouped):
+IF DRIVERS QUERY (answer has both attrition_description and ruc_risk grouped — use these fixed questions):
 Q1: "Give me the quarterly breakdown of this variance for recurring revenue showing RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition and Specific Attrition by quarter with latest forecast, prior forecast, variance and variance %."
 Q2: "Which quarter (Q1-Q4) shows the highest concentration of RUC revenue in the latest forecast for recurring revenue?"
 Q3: "Which l6/l7 products within RUC are contributing most to the $[exact RUC variance from answer]M variance between latest and prior forecast for recurring revenue?"
@@ -1135,7 +1133,7 @@ You are an expert SQL generator for PostgreSQL.
 TABLE: finance.forecast_data_new only. Double-quote ALL column names.
 
 No explanation, comments, markdown, raw newlines.
-Avoid these keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
+No dangerous keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
 No DATE_TRUNC or date functions.
 
 INPUT:
@@ -1143,33 +1141,32 @@ User question: {question}
 High level sql query: {high_level_sql}
 
 Use the exact filters, columns, schema, table from the high level sql to generate the description_sql.
-Modify the existing high level sql by considering all the rules below and generate a new description_sql.
+Modify the existing high level sql by applying the rules below.
 
 VERSION HANDLING:
-If question contains explicit version values (e.g. '2+10', '1+11') -> use them directly.
+If question contains explicit version values -> use them directly.
 If not -> detect dynamically:
 latest = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1)
 prior  = (SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals' ORDER BY CAST(SPLIT_PART("version", '+', 1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
-Column aliases: always use "latest" and "previous" for version comparison columns.
+Column aliases: always use "latest" and "previous".
 
 YEAR HANDLING:
-If question contains explicit year (e.g. "2026", "FY26") -> use it directly.
+If question contains explicit year -> use it directly.
 If not -> use (SELECT MAX("Year") FROM finance.forecast_data_new)
-Include "Year" filter. Year column is uppercase "Year".
+Always include "Year" filter. Year column is uppercase "Year".
 
 PRODUCT FILTERING:
 If user explicitly states a product level -> filter that exact level. Never substitute.
 If user does not state a level -> filter "l8_description" by default.
-If colvalue_mapping contains the product name under a specific level -> use that exact level.
 
 REVENUE TYPE / ACCOUNT ELEMENT FILTERING:
-"recurring" -> "l8_account" = 'Recurring Revenue'
-"non-recurring" -> "l8_account" = 'Non-Recurring Revenue'
-Always use "l8_account" for this filter. Never use l6_description or Revenue Type.
+When user mentions "recurring revenue" -> filter "l8_account" = 'Recurring Revenue'.
+When user mentions "non-recurring revenue" -> filter "l8_account" = 'Non-Recurring Revenue'.
+Always use "l8_account" for this filter.
 
 ATTRITION FILTERING:
-Filter column: "attrition_description". Do not use LOWER() or any case function.
-Exact values: 'Known attrition', 'Specific attrition', 'attrition provision'.
+Filter: "attrition_description". Do not use LOWER().
+Exact DB values: 'Known attrition', 'Specific attrition', 'attrition provision'.
 
 RUC/RISK FILTERING:
 Revenue under contract -> "ruc_risk" = 'RUC'
@@ -1180,68 +1177,74 @@ RUC/RISK ATTRITION FILTER:
 When filtering on ruc_risk = 'RUC', 'Risk ID', or 'Risk UID':
 Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 
-SQL DIALECT RULES:
-1. Generate PostgreSQL-compatible SQL only.
+SQL RULES:
+1. PostgreSQL-compatible SQL only.
 2. Query starts with SELECT or WITH.
-3. All tables referenced as finance.table_name. Main table: finance.forecast_data_new
-4. All column names and aliases enclosed in double quotes.
-5. Do not qualify column names with the table name.
-6. ROUND() requires ::numeric casting AFTER division by 1000000.0.
+3. Tables referenced as finance.table_name. Main table: finance.forecast_data_new
+4. ALL column names and aliases enclosed in double quotes.
+5. Do not qualify column names with table name.
+6. ROUND() always requires ::numeric casting AFTER division by 1000000.0.
    Correct: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2)
 7. SQL must not contain: DROP, DELETE, TRUNCATE, ALTER, UPDATE, INSERT, CREATE, REPLACE, GRANT, REVOKE
 8. No comments inside SQL.
 9. Use NULLIF for divide-by-zero: x / NULLIF(y, 0)
 10. GROUP BY lists only bare column names.
-11. Inside JOINs to CTEs, use the exact CTE name.
-12. No trailing comma after last CTE before SELECT.
+11. Inside JOINs to CTEs, use the EXACT CTE name.
+12. After the last CTE, no trailing comma before SELECT.
 13. Do not limit the rows.
 14. NULL in UNION ALL: NULL::text or NULL::numeric always.
 15. 'Total' in UNION ALL: 'Total'::text always.
 
-HIERARCHY DICTIONARY: {hierarchy_mapping}
+HIERARCHY DICTIONARY:
+{hierarchy_mapping}
 
 HIERARCHY LOGIC:
-1) Find question columns matching dictionary keys.
-2) For each key: add key to GROUP BY, then add mapped value to GROUP BY.
+1) Find question columns matching dictionary KEYS (ordered).
+2) For each key: add key to GROUP BY, then add its mapped value, then that value's mapped value.
    Do this for only two keys maximum.
-3) Append location, period, quarter, year after the drilled down level.
+3) Append with description_sql: location, period, quarter, year
 4) GROUP BY order must be exact.
+5) Two levels of groupby is enough.
+Rules: no skipping levels, no reordering, multiple keys resolved sequentially.
 
-ROUNDING: ROUND((SUM(COALESCE("amount",0)) / 1000000.0)::numeric, 2)
+ROUNDING:
+ROUND((SUM(COALESCE("amount",0)) / 1000000.0)::numeric, 2)
 Do not use ROUND(CAST(... AS numeric), 2).
 
-AGGREGATION: SUM(COALESCE("amount",0)). For top N: HAVING SUM(COALESCE("amount",0)) <> 0.
+AGGREGATION:
+SUM(COALESCE("amount",0)). For top N: HAVING SUM(COALESCE("amount",0)) <> 0.
+One SQL statement only.
 
-VERSION COMPARISON: Use CASE WHEN always. Do not use "version" IN (...) for two versions.
+VERSION COMPARISON:
+Do not use "version" IN ('2+10','1+11'). Always use CASE WHEN:
+SUM(CASE WHEN "version" = '2+10' THEN COALESCE("amount",0) ELSE 0 END) AS latest
+SUM(CASE WHEN "version" = '1+11' THEN COALESCE("amount",0) ELSE 0 END) AS previous
 
 UNION ALL ORDER BY:
 Do not put ORDER BY inside or directly after a UNION ALL without an outer subquery.
-Correct: SELECT * FROM (SELECT ... UNION ALL SELECT ...) t ORDER BY sort_key ASC, variance DESC
+Wrong: SELECT ... UNION ALL SELECT ... ORDER BY ...
+Right: SELECT * FROM (SELECT ... UNION ALL SELECT ...) t ORDER BY sort_key ASC
 
 ANALYTICAL CONTEXT RULE:
 Provide the deepest meaningful breakdown to explain the answer.
-Always provide context — never return a single number.
-- If main query grouped by entity_name -> break down by l7_description or l8_description.
-- If main query grouped by l8_account -> break down by top 5 clients.
-- If main query returned total only -> break down by l8_account then top 5 clients.
-- If main query grouped by ruc_risk -> break down by entity_name within each category.
-Do not return the same grouping as the main query. Always go one level deeper.
+If main query grouped by entity_name: break down by l7_description or l8_description.
+If main query grouped by l8_account: break down by top 5 clients.
+If main query returned total only: break down by l8_account then top 5 clients.
+If main query grouped by ruc_risk: break down by entity_name within each ruc_risk.
+Do not return the same grouping as the main query.
 
 DRILL DOWN HIERARCHY:
 l4_description -> l5_description -> l6_description -> l7_description -> l8_description -> entity_name
 
-VARIANCE QUERIES: Output must end with [most_detailed_group], col1, col2, variance
+VARIANCE QUERIES:
+Output ends with: [most_detailed_group], col1, col2, variance
 
 SELF-CHECK before output:
 - SQL matches logic
-- Hierarchy/group-by correct
 - ROUND casting everywhere using ::numeric pattern
 - No forbidden keywords
 - All filters from high level sql considered
-- Descriptive sql, not a single liner query
-- Output sql created by referring to input sql and user query
-- NULL in UNION ALL cast as NULL::text or NULL::numeric
-- 'Total' cast as 'Total'::text
+- NULL in UNION ALL cast correctly
 - RUC/Risk queries include attrition IS NULL filter
 
 Return ONLY JSON:
