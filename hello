@@ -10,91 +10,99 @@ INPUT:
 User question: {question}
 High level sql query: {high_level_sql}
 
-Your task: look at the high_level_sql GROUP BY column and generate description_sql
-that goes two levels deeper using the drill down mapping below.
-
-────────────────────────
-VERSION RULE
-────────────────────────
-'1+11' and '2+10' are version names, not math.
-Use exact version values from high_level_sql.
-Do not replace with dynamic subqueries if high_level_sql has explicit versions.
-If high_level_sql has dynamic version subquery, keep it as-is.
-
-────────────────────────
-YEAR RULE
-────────────────────────
-Copy exact "Year" filter from high_level_sql into description_sql.
-Year column is uppercase "Year".
-
-────────────────────────
-FILTER COPY RULE
-────────────────────────
-Copy ALL WHERE filters from high_level_sql into description_sql exactly.
-Including: version, Year, l8_account, ruc_risk, attrition_description, entity_name, l5_description, l6_description, l7_description, l8_description.
-Do not add or remove any filter.
+Your task:
+1. Look at the GROUP BY column in high_level_sql.
+2. Look at the WHERE filters in high_level_sql.
+3. Generate description_sql that drills one level deeper using the mapping below.
+4. Copy ALL filters from high_level_sql exactly into description_sql.
+5. Do not add LIMIT in description_sql.
+6. Do not add UNION ALL or Total row in description_sql.
 
 ────────────────────────
 DRILL DOWN MAPPING
 ────────────────────────
-Look at the GROUP BY column in high_level_sql.
-Then apply this mapping to decide description_sql GROUP BY:
-
 high_level_sql GROUP BY "l5_description"
--> description_sql GROUP BY "l5_description", "l7_description", "l9_account"
+-> description_sql GROUP BY "l5_description","l7_description","l9_account"
+-> amount column: variance between the two versions (CASE WHEN pattern)
 
-high_level_sql GROUP BY "l6_description"
--> description_sql GROUP BY "l6_description", "l7_description", "entity_name"
+high_level_sql GROUP BY "l7_description" with entity_name filter
+-> description_sql GROUP BY "l7_description","l9_account" with same entity_name filter
+-> amount column: revenue_M (single version)
 
-high_level_sql GROUP BY "l7_description" (no entity_name filter)
--> description_sql GROUP BY "l7_description", "l9_account"
+high_level_sql GROUP BY "entity_name"
+-> description_sql GROUP BY "entity_name","l7_description","l9_account"
+-> amount column: revenue_M (single version)
 
-high_level_sql GROUP BY "l7_description" WHERE entity_name filter exists (specific client)
--> description_sql GROUP BY "l7_description", "l9_account" with same entity_name filter
+high_level_sql GROUP BY "attrition_description","ruc_risk"
+-> description_sql GROUP BY "l6_description","entity_name" with same version/year/l8_account filters
+-> amount column: revenue_M (single version)
 
-high_level_sql GROUP BY "entity_name" (top N clients)
--> description_sql GROUP BY "entity_name", "l7_description", "l9_account"
-
-high_level_sql WHERE "entity_name" = '[specific client]' GROUP BY "l7_description"
--> description_sql GROUP BY "l7_description", "l9_account" with same entity_name filter
-
-high_level_sql GROUP BY "l8_description"
--> description_sql GROUP BY "l8_description", "l9_account"
-
-high_level_sql GROUP BY "l9_account"
--> description_sql GROUP BY "l9_account", "entity_name"
+high_level_sql GROUP BY "l6_description" with ruc_risk or attrition filter
+-> description_sql GROUP BY "l6_description","l7_description","entity_name" with same filters
+-> amount column: variance or revenue_M depending on high_level_sql
 
 ────────────────────────
-AMOUNT COLUMN RULE
+AMOUNT PATTERN
 ────────────────────────
-If high_level_sql compares two versions (has CASE WHEN version = X and CASE WHEN version = Y):
-Use variance pattern:
+If high_level_sql has two CASE WHEN version blocks (variance query):
 ROUND(((SUM(CASE WHEN "version"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-
 SUM(CASE WHEN "version"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
 
-If high_level_sql uses single version:
-Use revenue pattern:
+If high_level_sql uses single version (revenue query):
 ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+
+────────────────────────
+VERSION AND FILTER COPY RULE
+────────────────────────
+Copy exact version filter from high_level_sql. Do not change or replace.
+Copy exact "Year" filter from high_level_sql.
+Copy ALL other WHERE filters: "l8_account", "ruc_risk", "attrition_description", "entity_name".
 
 ────────────────────────
 SQL RULES
 ────────────────────────
-ROUNDING: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2)
+Rounding: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
 ::numeric cast comes AFTER dividing by 1000000.0.
-Wrong: ROUND(CAST(SUM(...) AS numeric), 2)
-
+Include HAVING SUM(COALESCE("amount",0))<>0
 No LIMIT in description_sql.
-No UNION ALL needed — just one SELECT with GROUP BY.
-No ORDER BY unless needed for clarity (optional: ORDER BY ABS(variance) DESC).
-HAVING SUM(COALESCE("amount",0)) <> 0
+No UNION ALL in description_sql.
+ORDER BY parent col, ABS("variance") DESC or "revenue_M" DESC
 
-────────────────────────
-EXAMPLES
-────────────────────────
+=====================================================
+FEW-SHOT EXAMPLES
+=====================================================
 
-Example 1 — high_level_sql groups by l5_description, variance between '2+10' and '1+11':
+--------------------------------------------------------
+Example 1 - GENERAL VARIANCE BY L5
+--------------------------------------------------------
+
+User Question:
+What is the variance between 1+11 and 2+10?
+
+High-Level SQL (Input):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l5_description",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    GROUP BY "l5_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text AS "l5_description", ...
+) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+
+Logical Steps:
+step1 = high_level_sql groups by l5_description with variance between '2+10' and '1+11'.
+step2 = Drill down mapping: l5_description -> l5_description, l7_description, l9_account.
+step3 = Use variance pattern (two CASE WHEN blocks) since high_level_sql is a variance query.
+step4 = Copy Year filter from high_level_sql. No other filters present.
+step5 = No LIMIT, no UNION ALL, no Total row in description_sql.
+
 description_sql:
-SELECT "l5_description", "l7_description", "l9_account",
+SELECT "l5_description","l7_description","l9_account",
     ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
     SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
 FROM finance.forecast_data_new
@@ -103,74 +111,98 @@ GROUP BY "l5_description","l7_description","l9_account"
 HAVING SUM(COALESCE("amount",0))<>0
 ORDER BY "l5_description","l7_description", ABS("variance") DESC
 
-Example 2 — high_level_sql groups by l6_description with ruc_risk='RUC', variance:
-description_sql:
-SELECT "l6_description","l7_description","entity_name",
-    ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-    SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-FROM finance.forecast_data_new
-WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-AND "ruc_risk"='RUC'
-AND ("attrition_description" IS NULL OR TRIM("attrition_description")='')
-GROUP BY "l6_description","l7_description","entity_name"
-HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "l6_description","l7_description", ABS("variance") DESC
+--------------------------------------------------------
+Example 2 - SPECIFIC CLIENT REVENUE
+--------------------------------------------------------
 
-Example 3 — high_level_sql filters entity_name='JPMorgan Chase', groups by l7_description, single version:
+User Question:
+What is the revenue for The Bank of New York?
+
+High-Level SQL (Input):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l7_description",
+        ROUND(CAST(SUM(COALESCE("amount",0))/1000000.0 AS numeric),2) AS "revenue_M"
+    FROM finance.forecast_data_new
+    WHERE "entity_name"='The Bank of New York Mellon'
+    AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    GROUP BY "l7_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1, 'Total', ...
+) t ORDER BY sort_key ASC, "revenue_M" DESC LIMIT 11
+
+Logical Steps:
+step1 = high_level_sql filters entity_name='The Bank of New York Mellon' and groups by l7_description.
+step2 = Drill down mapping: l7_description with entity_name filter -> l7_description, l9_account.
+step3 = Use revenue_M pattern (single version) since high_level_sql is a revenue query.
+step4 = Copy entity_name, Year, and version filters exactly from high_level_sql.
+step5 = No LIMIT, no UNION ALL, no Total row in description_sql.
+
 description_sql:
 SELECT "l7_description","l9_account",
     ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
 FROM finance.forecast_data_new
-WHERE "entity_name"='JPMorgan Chase'
+WHERE "entity_name"='The Bank of New York Mellon'
 AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-AND "version"=(SELECT "version" FROM finance.forecast_data_new
-    ORDER BY CAST(SPLIT_PART("version",'+',1) AS INTEGER) DESC LIMIT 1)
+AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
+    WHERE t2."version" != 'Actuals'
+    ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
 GROUP BY "l7_description","l9_account"
 HAVING SUM(COALESCE("amount",0))<>0
 ORDER BY "l7_description","revenue_M" DESC
 
-Example 4 — high_level_sql groups by entity_name (top N), single version:
+--------------------------------------------------------
+Example 3 - RUC/RISK REVENUE BY ATTRITION AND RUC_RISK
+--------------------------------------------------------
+
+User Question:
+Give revenue based on RUC/RISK.
+
+High-Level SQL (Input):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "attrition_description", "ruc_risk",
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS revenue_M
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    AND "l8_account" = 'Recurring Revenue'
+    GROUP BY "attrition_description","ruc_risk"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text, NULL::text, ...
+) t ORDER BY sort_key ASC, revenue_M DESC
+
+Logical Steps:
+step1 = high_level_sql groups by attrition_description, ruc_risk with l8_account='Recurring Revenue'.
+step2 = Drill down mapping: attrition_description+ruc_risk -> l6_description, entity_name.
+step3 = Use revenue_M pattern (single version) since high_level_sql is a revenue query.
+step4 = Copy Year, version, and l8_account='Recurring Revenue' filters exactly.
+step5 = No LIMIT, no UNION ALL, no Total row in description_sql.
+
 description_sql:
-SELECT "entity_name","l7_description","l9_account",
+SELECT "l6_description","entity_name",
     ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
 FROM finance.forecast_data_new
 WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-AND "version"=(SELECT "version" FROM finance.forecast_data_new
-    ORDER BY CAST(SPLIT_PART("version",'+',1) AS INTEGER) DESC LIMIT 1)
-GROUP BY "entity_name","l7_description","l9_account"
-HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "entity_name","l7_description","revenue_M" DESC
-
-Example 5 — high_level_sql groups by l6_description with l8_account='Recurring Revenue', variance:
-description_sql:
-SELECT "l6_description","l7_description","entity_name",
-    ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-    SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-FROM finance.forecast_data_new
-WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
+    WHERE t2."version" != 'Actuals'
+    ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
 AND "l8_account"='Recurring Revenue'
-GROUP BY "l6_description","l7_description","entity_name"
+GROUP BY "l6_description","entity_name"
 HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "l6_description","l7_description", ABS("variance") DESC
+ORDER BY "l6_description","revenue_M" DESC
 
-Example 6 — high_level_sql groups by l6_description with attrition filter, variance:
-description_sql:
-SELECT "l6_description","l7_description","entity_name",
-    ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-    SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-FROM finance.forecast_data_new
-WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-AND "attrition_description" IN ('Specific attrition','Known attrition','attrition provision')
-GROUP BY "l6_description","l7_description","entity_name"
-HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "l6_description","l7_description", ABS("variance") DESC
-
-────────────────────────
+=====================================================
 FINAL OUTPUT
-────────────────────────
+=====================================================
 Return ONLY JSON:
 {
-  "steps":["step1","step2"],
+  "steps":["step1","step2","step3"],
   "description_sql":"<VALID POSTGRESQL QUERY>"
 }
 """.strip()
