@@ -66,8 +66,10 @@ Rounding: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
 Include HAVING SUM(COALESCE("amount",0))<>0
 No LIMIT in description_sql.
 No UNION ALL in description_sql.
-For variance queries ORDER BY: parent col, ABS(SUM(CASE WHEN version=V1...)-SUM(CASE WHEN version=V2...)) DESC
-For revenue queries ORDER BY: parent col, revenue_M DESC
+For ORDER BY: always wrap the full SELECT in a subquery so aliases can be referenced.
+Example: SELECT * FROM (SELECT ..., expr AS "variance" FROM ... GROUP BY ... HAVING ...) t ORDER BY "variance" DESC
+For variance queries: ORDER BY "l5_description","l7_description", ABS("variance") DESC
+For revenue queries: ORDER BY parent_col, "revenue_M" DESC
 
 =====================================================
 FEW-SHOT EXAMPLES
@@ -103,16 +105,16 @@ step4 = Copy Year filter from high_level_sql. No other filters present.
 step5 = No LIMIT, no UNION ALL, no Total row in description_sql.
 
 description_sql:
-SELECT "l5_description","l7_description","l9_account",
-    ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-    SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-FROM finance.forecast_data_new
-WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-GROUP BY "l5_description","l7_description","l9_account"
-HAVING SUM(COALESCE("amount",0))<>0
-ORDER BY "l5_description","l7_description",
-    ABS(SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-    SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)) DESC
+SELECT * FROM (
+    SELECT "l5_description","l7_description","l9_account",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
+        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    GROUP BY "l5_description","l7_description","l9_account"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l5_description","l7_description", ABS("variance") DESC
 
 --------------------------------------------------------
 Example 2 - SPECIFIC CLIENT REVENUE
