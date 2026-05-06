@@ -61,8 +61,14 @@ ROUND(((SUM(CASE WHEN "version"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-
 SUM(CASE WHEN "version"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
 
 If high_level_sql uses single version (revenue query):
-Include revenue_M only:
-ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+Include revenue_M and share_pct (2 numeric columns needed by renderer).
+PARTITION BY must be the FIRST GROUP BY column so share is within each parent:
+ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M",
+ROUND((SUM(COALESCE("amount",0))*100.0/NULLIF(SUM(SUM(COALESCE("amount",0))) OVER(PARTITION BY [first_group_col]),0))::numeric,2) AS "share_pct"
+Examples:
+- GROUP BY "entity_name","l7_description","l9_account" -> PARTITION BY "entity_name"
+- GROUP BY "l7_description","l9_account" -> PARTITION BY "l7_description"
+- GROUP BY "l6_description","entity_name" -> PARTITION BY "l6_description"
 
 ────────────────────────
 FILTER COPY RULE
@@ -127,7 +133,8 @@ high_level_sql filters: "entity_name"='The Bank of New York Mellon', "Year", "ve
 description_sql:
 SELECT * FROM (
     SELECT "l7_description","l9_account","location",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M",
+        ROUND((SUM(COALESCE("amount",0))*100.0/NULLIF(SUM(SUM(COALESCE("amount",0))) OVER(PARTITION BY "l7_description"),0))::numeric,2) AS "share_pct"
     FROM finance.forecast_data_new
     WHERE "entity_name"='The Bank of New York Mellon'
     AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
@@ -150,7 +157,8 @@ high_level_sql filters: "Year", "version" (latest dynamic), "l8_account"='Recurr
 description_sql:
 SELECT * FROM (
     SELECT "l6_description","entity_name","location",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M",
+        ROUND((SUM(COALESCE("amount",0))*100.0/NULLIF(SUM(SUM(COALESCE("amount",0))) OVER(PARTITION BY "l6_description"),0))::numeric,2) AS "share_pct"
     FROM finance.forecast_data_new
     WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
     AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
@@ -173,7 +181,8 @@ high_level_sql filters: "Year", "version" (latest dynamic)
 description_sql:
 SELECT * FROM (
     SELECT "entity_name","l7_description","l9_account","location",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M",
+        ROUND((SUM(COALESCE("amount",0))*100.0/NULLIF(SUM(SUM(COALESCE("amount",0))) OVER(PARTITION BY "entity_name"),0))::numeric,2) AS "share_pct"
     FROM finance.forecast_data_new
     WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
     AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
