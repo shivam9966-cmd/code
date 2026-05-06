@@ -23,26 +23,26 @@ Your task:
 DRILL DOWN MAPPING
 ────────────────────────
 high_level_sql GROUP BY "l5_description"
--> description_sql GROUP BY "l5_description","l9_account"
+-> description_sql GROUP BY "l5_description","l9_account","location"
 
 high_level_sql GROUP BY "l6_description"
--> description_sql GROUP BY "l6_description","entity_name"
+-> description_sql GROUP BY "l6_description","entity_name","location"
 
 high_level_sql GROUP BY "l7_description" with entity_name filter (specific client)
--> description_sql GROUP BY "l7_description","l9_account" with same entity_name filter
+-> description_sql GROUP BY "l7_description","l9_account","location" with same entity_name filter
 
 high_level_sql GROUP BY "l7_description" without entity_name filter
--> description_sql GROUP BY "l7_description","l9_account"
+-> description_sql GROUP BY "l7_description","l9_account","location"
 
 high_level_sql GROUP BY "entity_name" (top N clients)
--> description_sql GROUP BY "entity_name","l7_description","l9_account"
+-> description_sql GROUP BY "entity_name","l7_description","l9_account","location"
 
 high_level_sql GROUP BY "attrition_description","ruc_risk"
--> description_sql GROUP BY "l6_description","entity_name"
+-> description_sql GROUP BY "l6_description","entity_name","location"
 -> keep same version, Year, l8_account filters
 
 high_level_sql GROUP BY "l8_description"
--> description_sql GROUP BY "l8_description","l9_account"
+-> description_sql GROUP BY "l8_description","l9_account","location"
 
 ────────────────────────
 AMOUNT PATTERN
@@ -100,14 +100,14 @@ high_level_sql filters: "Year" = MAX(Year)
 
 description_sql:
 SELECT * FROM (
-    SELECT "l5_description","l9_account",
+    SELECT "l5_description","l9_account","location",
         ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
         ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
         SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
     FROM finance.forecast_data_new
     WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    GROUP BY "l5_description","l9_account"
+    GROUP BY "l5_description","l9_account","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l5_description", ABS("variance") DESC
@@ -122,7 +122,7 @@ high_level_sql filters: "entity_name"='The Bank of New York Mellon', "Year", "ve
 
 description_sql:
 SELECT * FROM (
-    SELECT "l7_description","l9_account",
+    SELECT "l7_description","l9_account","location",
         ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M",
         ROUND((SUM(COALESCE("amount",0))*100.0/NULLIF(SUM(SUM(COALESCE("amount",0))) OVER(),0))::numeric,2) AS "share_pct"
     FROM finance.forecast_data_new
@@ -131,7 +131,7 @@ SELECT * FROM (
     AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
         WHERE t2."version" != 'Actuals'
         ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    GROUP BY "l7_description","l9_account"
+    GROUP BY "l7_description","l9_account","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l7_description", "revenue_M" DESC
@@ -146,7 +146,7 @@ high_level_sql filters: "Year", "version" (latest dynamic), "l8_account"='Recurr
 
 description_sql:
 SELECT * FROM (
-    SELECT "l6_description","entity_name",
+    SELECT "l6_description","entity_name","location",
         ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M",
         ROUND((SUM(COALESCE("amount",0))*100.0/NULLIF(SUM(SUM(COALESCE("amount",0))) OVER(),0))::numeric,2) AS "share_pct"
     FROM finance.forecast_data_new
@@ -155,7 +155,7 @@ SELECT * FROM (
         WHERE t2."version" != 'Actuals'
         ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
     AND "l8_account"='Recurring Revenue'
-    GROUP BY "l6_description","entity_name"
+    GROUP BY "l6_description","entity_name","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l6_description", "revenue_M" DESC
@@ -170,7 +170,7 @@ high_level_sql filters: "Year", "version" (latest dynamic)
 
 description_sql:
 SELECT * FROM (
-    SELECT "entity_name","l7_description","l9_account",
+    SELECT "entity_name","l7_description","l9_account","location",
         ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M",
         ROUND((SUM(COALESCE("amount",0))*100.0/NULLIF(SUM(SUM(COALESCE("amount",0))) OVER(),0))::numeric,2) AS "share_pct"
     FROM finance.forecast_data_new
@@ -178,7 +178,7 @@ SELECT * FROM (
     AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
         WHERE t2."version" != 'Actuals'
         ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    GROUP BY "entity_name","l7_description","l9_account"
+    GROUP BY "entity_name","l7_description","l9_account","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "entity_name", "revenue_M" DESC
@@ -193,7 +193,7 @@ high_level_sql filters: "ruc_risk"='RUC', attrition IS NULL, "Year", versions '2
 
 description_sql:
 SELECT * FROM (
-    SELECT "l6_description","entity_name",
+    SELECT "l6_description","entity_name","location",
         ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
         ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
@@ -202,7 +202,7 @@ SELECT * FROM (
     WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
     AND "ruc_risk"='RUC'
     AND ("attrition_description" IS NULL OR TRIM("attrition_description")='')
-    GROUP BY "l6_description","entity_name"
+    GROUP BY "l6_description","entity_name","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l6_description", ABS("variance") DESC
@@ -217,7 +217,7 @@ high_level_sql filters: "attrition_description" IN (...), "Year", versions '2+10
 
 description_sql:
 SELECT * FROM (
-    SELECT "l6_description","entity_name",
+    SELECT "l6_description","entity_name","location",
         ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
         ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
@@ -225,7 +225,7 @@ SELECT * FROM (
     FROM finance.forecast_data_new
     WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
     AND "attrition_description" IN ('Specific attrition','Known attrition','attrition provision')
-    GROUP BY "l6_description","entity_name"
+    GROUP BY "l6_description","entity_name","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l6_description", ABS("variance") DESC
