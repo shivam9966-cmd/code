@@ -28,7 +28,7 @@ high_level_sql GROUP BY "l5_description"
 
 high_level_sql GROUP BY "l6_description"
 -> description_sql GROUP BY "l6_description","entity_name","location"
--> amount: both version amounts + variance (variance query) or revenue_M (single version)
+-> amount: both version amounts + variance (variance) or revenue_M (single version)
 
 high_level_sql GROUP BY "l7_description" with entity_name filter (specific client)
 -> description_sql GROUP BY "l7_description","l9_account","location" with same entity_name filter
@@ -36,7 +36,7 @@ high_level_sql GROUP BY "l7_description" with entity_name filter (specific clien
 
 high_level_sql GROUP BY "l7_description" without entity_name filter
 -> description_sql GROUP BY "l7_description","l9_account","location"
--> amount: both version amounts + variance (variance query) or revenue_M (single version)
+-> amount: both version amounts + variance (variance) or revenue_M (single version)
 
 high_level_sql GROUP BY "entity_name" (top N clients)
 -> description_sql GROUP BY "entity_name","l7_description","l9_account","location"
@@ -87,7 +87,8 @@ SELECT * FROM (
     GROUP BY [cols]
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
-ORDER BY [first_group_col], [amount_col] DESC
+ORDER BY [first_group_col], ABS("variance") DESC
+or ORDER BY [first_group_col], "revenue_M" DESC
 
 =====================================================
 FEW-SHOT EXAMPLES
