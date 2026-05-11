@@ -45,7 +45,15 @@ QUARTER_COLS = ["Q1", "Q2", "Q3", "Q4"]
 
 # ── LOAD ────────────────────────────────────────────────────────────────────
 print(f"Reading {INPUT_FILE}...")
-df_raw = pd.read_excel(INPUT_FILE, sheet_name=SHEET_NAME, dtype=str)
+# Try reading with header on first row
+# If columns still show as Unnamed, change header=0 to header=1 or header=2
+df_raw = pd.read_excel(INPUT_FILE, sheet_name=SHEET_NAME, dtype=str, header=0)
+
+# If first row is blank/metadata, uncomment this instead:
+# df_raw = pd.read_excel(INPUT_FILE, sheet_name=SHEET_NAME, dtype=str, header=1)
+
+# Strip whitespace from all column names
+df_raw.columns = df_raw.columns.str.strip()
 
 print(f"Raw shape: {df_raw.shape}")
 print(f"Columns found: {df_raw.columns.tolist()}")
@@ -101,9 +109,9 @@ print(f"Dropped {before - after} zero-amount rows. Remaining: {after}")
 month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
                "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
 df_melted["month_order"] = df_melted["month"].map(month_order)
-df_melted = df_melted.sort_values(
-    by=["EntityName", "Scenario", "Year", "month_order"]
-).drop(columns=["month_order"]).reset_index(drop=True)
+# Sort by available columns only
+sort_cols = [c for c in ["EntityName", "Scenario", "Year", "month_order"] if c in df_melted.columns]
+df_melted = df_melted.sort_values(by=sort_cols).drop(columns=["month_order"], errors="ignore").reset_index(drop=True)
 
 # ── SAVE ─────────────────────────────────────────────────────────────────────
 df_melted.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
