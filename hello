@@ -86,9 +86,13 @@ df_melted["amount"] = (
     .astype(str)
     .str.replace(",", "", regex=False)
     .str.replace(" ", "", regex=False)
+    .str.replace("$", "", regex=False)
     .str.strip()
 )
-df_melted["amount"] = pd.to_numeric(df_melted["amount"], errors="coerce").fillna(0)
+df_melted["amount"] = pd.to_numeric(df_melted["amount"], errors="coerce").fillna(0.0)
+df_melted["amount"] = df_melted["amount"].astype(float)
+print(f"Amount dtype: {df_melted['amount'].dtype}")
+print(f"Amount sample: {df_melted['amount'].head(3).tolist()}")
 
 # ── LOWERCASE PRODUCT AND ACCOUNT COLUMN VALUES ──────────────────────────────
 product_cols = [c for c in df_melted.columns if "Product" in c and "Description" in c]
