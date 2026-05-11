@@ -113,6 +113,10 @@ df_melted["month_order"] = df_melted["month"].map(month_order)
 sort_cols = [c for c in ["EntityName", "Scenario", "Year", "month_order"] if c in df_melted.columns]
 df_melted = df_melted.sort_values(by=sort_cols).drop(columns=["month_order"], errors="ignore").reset_index(drop=True)
 
+# ── LOWERCASE ALL COLUMN NAMES ───────────────────────────────────────────────
+df_melted.columns = [c.lower() for c in df_melted.columns]
+print(f"Final columns: {df_melted.columns.tolist()}")
+
 # ── SAVE ─────────────────────────────────────────────────────────────────────
 df_melted.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
 print(f"\nDone. Saved to: {OUTPUT_FILE}")
