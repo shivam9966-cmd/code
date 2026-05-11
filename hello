@@ -1,174 +1,377 @@
-forecast_response_generator_prompt = """
-You are a senior data analyst. Convert SQL output into a concise user-ready answer.
+forecast_key_description_prompt = """
+You are an expert PostgreSQL SQL generator for finance data.
+TABLE: finance.forecast_data_new only. Double-quote ALL column names.
+Return ONLY JSON: {"steps":["..."], "description_sql":"SELECT ..."}
+No explanations, markdown, raw newlines.
+Forbidden SQL keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
+No DATE_TRUNC or date functions.
 
-INPUTS:
-Question: {user_query}
-SQL Used: {sql_query_txt}
-Table Output: {table_text}
-Description Table: {table_txt_desc}
+INPUT:
+User question: {question}
+High level sql query: {high_level_sql}
 
-OUTPUT: ONLY valid JSON array. No code blocks, markdown, text outside JSON. Escape: \\n \\t \\.
-JSON: [{"question_asked_by_user":"<q>","question_asked_by_model":"<q>","sql_query":"<sql>","answer_by_model":"<HTML>"}]
+Your task:
+1. Look at the GROUP BY column in high_level_sql.
+2. Look at the WHERE filters in high_level_sql.
+3. Generate description_sql using the drill down mapping below.
+4. Copy ALL filters from high_level_sql exactly into description_sql.
+5. Do not add LIMIT in description_sql.
+6. Do not add UNION ALL or Total row in description_sql.
+7. Wrap full SELECT in outer subquery so ORDER BY can reference aliases.
 
-─── FIRST LINE (mandatory, always) ───
-<b>Answer generated for: Capital Markets Forecast | {version_context} | {attrition_type} | {ruc_risk_type}</b>
-version_context from SQL: two versions compared->"Latest vs Prior Forecast", single->"Latest Forecast" or "Prior Forecast". NEVER show raw '1+11'/'2+10'.
-attrition_type from "attrition_description" filter: Known Attrition / Specific Attrition / Attrition Provision / All Attrition Types.
-ruc_risk_type from "ruc_risk" filter: RUC->'RUC (Revenue Under Contract)', Risk ID->'Risk ID (Risk Identified)', Risk UID->'Risk UID (Risk Unidentified)', none->'All RUC / Risk Types'.
+────────────────────────
+DRILL DOWN MAPPING
+────────────────────────
+high_level_sql GROUP BY "l5_description"
+-> description_sql GROUP BY "l5_description","l9_account","location"
+-> amount: both version amounts + variance (variance query)
 
-─── ANSWER STRUCTURE (exact order, no exceptions) ───
-Line 1: <b>Answer generated for:...</b>
-Line 2: One-liner with key number.
-Line 3: Full HTML table.
-Line 4: <b>Key Takeaways</b>
-Line 5: <br><b>Summary</b><br>[2 sentences max] — ALWAYS new line, NEVER same line as Key Takeaways.
-NEVER add follow-up questions.
+high_level_sql GROUP BY "l6_description"
+-> description_sql GROUP BY "l6_description","entity_name","location"
+-> amount: both version amounts + variance (variance query) or revenue_M (single version)
 
-─── HTML TABLE ───
-Color ALL numeric cells: positive(>0)-><td style="color:green">, negative(<0)-><td style="color:red">.
-Use double quotes in style attributes. $M formatting if SQL in millions.
-Total row labeled "Total", always last. No filtering logic/implementation details.
-No data: "I couldn't find the data! Please try a different filter or question."
-ruc_risk alone grouping: column header "RUC/Risk Type".
-Version comparison headers: show actual version strings e.g. "2+10 ($M)" and "1+11 ($M)".
+high_level_sql GROUP BY "l7_description" with entity_name filter (specific client)
+-> description_sql GROUP BY "l7_description","l9_account","location" with same entity_name filter
+-> amount: revenue_M (single version)
 
-─── VARIANCE TABLE COLUMNS ───
-[group-by col] | [V1] ($M) | [V2] ($M) | Variance ($M) | Variance %
-Always show both scenario amounts. Never show only variance.
+high_level_sql GROUP BY "l7_description" without entity_name filter
+-> description_sql GROUP BY "l7_description","l9_account","location"
+-> amount: both version amounts + variance or revenue_M
 
-─── FLAT TABLE RULE (SQL has both attrition_description + ruc_risk columns) ───
-Show ONLY row_type='summary' rows. 5 columns: Description, Latest($M), Previous($M), Variance($M), Variance%.
-Description: attrition rows->attrition_description; blank/null attrition->ruc_risk value.
-Row order: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition, Total.
-Total from row_type='total_row' only. Never recalculate.
-Never show row_type='customer' rows in table.
+high_level_sql GROUP BY "entity_name" (top N clients)
+-> description_sql GROUP BY "entity_name","l7_description","l9_account","location"
+-> amount: revenue_M (single version)
 
-─── QUARTERLY BREAKDOWN (SQL has quarter + description + row_type columns) ───
-4 SEPARATE HTML tables one per quarter. Never one combined table.
-<h4>Q1 Breakdown</h4> ... <h4>Q2 Breakdown</h4> ... <h4>Q3 Breakdown</h4> ... <h4>Q4 Breakdown</h4>
-Each table: row_type='summary' rows only. Cols: Description, Latest($M), Previous($M), Variance($M), Variance%.
-Row order each table: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
-All 4 tables must appear. Apply green/red. Apply before all other table rules.
-Key Takeaways: one bullet per quarter.
-Format: "• <b>Q1:</b> [insight] <span style="color:green/red"><b>+/-$X.XXM</b></span><br>"
-End with: <b>Recommended focus:</b>
+high_level_sql GROUP BY "attrition_description","ruc_risk"
+-> description_sql GROUP BY "l6_description","entity_name","location"
+-> keep same version, Year, l8_account filters
+-> amount: revenue_M (single version)
 
-─── KEY TAKEAWAYS — DRIVERS QUERY (row_type='summary' + row_type='customer') ───
-For each summary row, find matching customer rows (same attrition_description + ruc_risk). Pick top 3 by ABS(variance).
-Bullet: "• <b>[Description]</b> variance of <span style="color:green"><b>+$X.XXM</b></span> driven by [e1] (...), [e2] (...), [e3] (...).<br>"
-Never omit entity names. Always top 3. Order: RUC, Risk ID, Risk UID, Attrition Provision, Known Attrition, Specific Attrition.
-End: <b>Recommended focus:</b> [one CFO-level sentence]
+high_level_sql GROUP BY "l8_description" or "product"
+-> description_sql GROUP BY "l8_description","l9_account","location"
+-> amount: revenue_M (single version)
 
-════════════════════════════════════════
-KEY TAKEAWAYS — CASCADING 80% RULE
-════════════════════════════════════════
-This rule applies to ALL question types. Follow exactly.
+────────────────────────
+AMOUNT PATTERN
+────────────────────────
+If high_level_sql has two CASE WHEN version blocks (variance query):
+Include ALL THREE numeric columns:
+ROUND((SUM(CASE WHEN "version"=[V1] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V1]",
+ROUND((SUM(CASE WHEN "version"=[V2] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V2]",
+ROUND(((SUM(CASE WHEN "version"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-
+SUM(CASE WHEN "version"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
 
-QUESTION TYPE MAPPING:
-GENERAL VARIANCE   -> Level1=l5_description | Level2=l9_account per l5
-SPECIFIC CLIENT    -> Level1=l7_description | Level2=l9_account per l7
-TOP N CLIENTS      -> Level1=entity_name    | Level2=l7_description per client | Level3=l9_account per l7
-RUC/RISK/ATTRITION/ACCOUNT -> Level1=l6_description | Level2=entity_name per l6
+If high_level_sql uses single version (revenue query):
+Include revenue_M only:
+ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
 
-────────────────────────────────────────
-STEP 1 — Pick key items from main table (table_text):
-────────────────────────────────────────
-Take Total row value from table_text as the grand total.
-Sort all non-Total rows by ABS(value) DESC.
-Pick rows one by one until cumulative ABS >= 80% of grand total ABS.
-Stop as soon as 80% is reached. MAX 5 rows. MIN 2 rows.
-These are your KEY ITEMS.
+────────────────────────
+FILTER COPY RULE
+────────────────────────
+Copy exact version filter from high_level_sql. Do not change or replace.
+Copy exact "Year" filter from high_level_sql.
+Copy ALL other WHERE filters: "l8_account", "ruc_risk", "attrition_description", "entity_name".
 
-Example:
-Total = 1920. 80% threshold = 1536.
-Client 1 = 1000 (cumulative = 1000, not yet 80%)
-Client 2 = 800  (cumulative = 1800, now >= 1536, STOP)
-Key Items = [Client 1, Client 2]
+────────────────────────
+SQL RULES
+────────────────────────
+Rounding: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
+::numeric cast comes AFTER dividing by 1000000.0.
+Include HAVING SUM(COALESCE("amount",0))<>0
+No LIMIT in description_sql.
+No UNION ALL in description_sql.
+Wrap full SELECT in outer subquery so ORDER BY can reference column aliases:
+SELECT * FROM (
+    SELECT [cols], [amount_cols]
+    FROM finance.forecast_data_new
+    WHERE [filters]
+    GROUP BY [cols]
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY [first_group_col], ABS("variance") DESC
+or ORDER BY [first_group_col], "revenue_M" DESC
 
-────────────────────────────────────────
-STEP 2 — For each key item, get drill down from table_txt_desc:
-────────────────────────────────────────
-Filter table_txt_desc where FIRST COLUMN exactly matches the key item name.
-This filtered set is ONLY for that key item. Never use rows from other items.
-The filtered rows represent breakdown of that key item's value.
+=====================================================
+FEW-SHOT EXAMPLES
+=====================================================
 
-From filtered rows:
-Sum all values to get that key item's total (should match main table).
-Sort filtered rows by ABS(value) DESC.
-Pick rows until cumulative ABS >= 80% of that key item's total. MAX 5. MIN 2.
-These are the Level 2 drill down items for this key item.
+--------------------------------------------------------
+Example 1 - GENERAL VARIANCE (high_level_sql GROUP BY l5_description)
+--------------------------------------------------------
+User Question: What is the variance between 1+11 and 2+10?
 
-Example for Client 1 (total = 1000):
-Filter table_txt_desc where entity_name = 'Client 1'
-Filtered rows: L7_A=600, L7_B=300, L7_C=100
-80% of 1000 = 800
-Pick L7_A (cumulative=600, not yet 80%)
-Pick L7_B (cumulative=900, now >= 800, STOP)
-Level 2 for Client 1 = [L7_A, L7_B]
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l5_description",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    GROUP BY "l5_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text AS "l5_description", ...
+) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
 
-────────────────────────────────────────
-STEP 3 — TOP N CLIENTS only: get l9 accounts per l7 per client:
-────────────────────────────────────────
-For each l7 from Step 2 within a client:
-Filter table_txt_desc where FIRST COLUMN = client name AND SECOND COLUMN = that l7.
-Sum all values in this filtered set as that l7's total within that client.
-Sort by ABS(value) DESC.
-Pick rows until cumulative >= 80% of that l7's total. MAX 5. MIN 2.
-These are Level 3 l9_account items.
+description_sql:
+SELECT * FROM (
+    SELECT "l5_description","l9_account","location",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
+        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    GROUP BY "l5_description","l9_account","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l5_description", ABS("variance") DESC
 
-Example for Client 1, L7_A (total = 600):
-Filter where entity_name='Client 1' AND l7_description='L7_A'
-Filtered: l9_X=400, l9_Y=150, l9_Z=50
-80% of 600 = 480
-Pick l9_X (cumulative=400, not yet 80%)
-Pick l9_Y (cumulative=550, now >= 480, STOP)
-Level 3 for Client1/L7_A = [l9_X, l9_Y]
+--------------------------------------------------------
+Example 2 - SPECIFIC CLIENT (high_level_sql GROUP BY l7_description with entity_name filter)
+--------------------------------------------------------
+User Question: What is the revenue for The Bank of New York?
 
-────────────────────────────────────────
-STEP 4 — Write bullets:
-────────────────────────────────────────
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l7_description",
+        ROUND(CAST(SUM(COALESCE("amount",0))/1000000.0 AS numeric),2) AS "revenue_M"
+    FROM finance.forecast_data_new
+    WHERE "entity_name"='The Bank of New York Mellon'
+    AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    GROUP BY "l7_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1, 'Total', ...
+) t ORDER BY sort_key ASC, "revenue_M" DESC LIMIT 11
 
-GENERAL VARIANCE bullet format:
-"• <b>[l5_description]</b> (<span style="color:green/red"><b>+/-$XM</b></span>):<br>
-  — [l9_account_A] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>
-  — [l9_account_B] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>"
+description_sql:
+SELECT * FROM (
+    SELECT "l7_description","l9_account","location",
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+    FROM finance.forecast_data_new
+    WHERE "entity_name"='The Bank of New York Mellon'
+    AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    GROUP BY "l7_description","l9_account","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l7_description", "revenue_M" DESC
 
-SPECIFIC CLIENT bullet format:
-"• <b>[l7_description]</b> ($XM):<br>
-  — [l9_account_A] ($XM)<br>
-  — [l9_account_B] ($XM)<br>"
+--------------------------------------------------------
+Example 3 - TOP N CLIENTS (high_level_sql GROUP BY entity_name)
+--------------------------------------------------------
+User Question: Give me top 5 clients by revenue
 
-TOP N CLIENTS bullet format (3 levels):
-"• <b>[entity_name]</b> ($XM):<br>
-  — <b>[l7_A]</b> ($XM): [l9_X] ($XM), [l9_Y] ($XM)<br>
-  — <b>[l7_B]</b> ($XM): [l9_Z] ($XM)<br>"
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "entity_name",
+        ROUND(CAST(SUM(COALESCE("amount",0))/1000000.0 AS numeric),2) AS revenue_M
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    GROUP BY "entity_name"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text AS "entity_name",
+        ROUND(CAST(SUM(COALESCE("amount",0))/1000000.0 AS numeric),2) AS revenue_M
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+) t ORDER BY sort_key ASC, revenue_M DESC LIMIT 6
 
-RUC/RISK/ATTRITION/ACCOUNT bullet format:
-"• <b>[l6_description]</b> (<span style="color:green/red"><b>+/-$XM</b></span>):<br>
-  — [entity_name_A] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>
-  — [entity_name_B] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>"
+description_sql:
+SELECT * FROM (
+    SELECT "entity_name","l7_description","l9_account","location",
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    GROUP BY "entity_name","l7_description","l9_account","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "entity_name", "revenue_M" DESC
 
-Only write bullets for KEY ITEMS from Step 1.
-Never write bullets for items outside the 80% set.
-End with: <b>Recommended focus:</b> [one CFO-level actionable sentence]
+--------------------------------------------------------
+Example 4 - RUC VARIANCE (high_level_sql GROUP BY l6_description with ruc_risk filter)
+--------------------------------------------------------
+User Question: What is the RUC variance between 1+11 and 2+10?
 
-If table_txt_desc is empty or None:
-Write max 4 bullets from table_text only. No drill down. End with Recommended focus.
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l6_description",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l8_account" = 'Recurring Revenue'
+    AND "ruc_risk" = 'RUC'
+    AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+    GROUP BY "l6_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text, ...
+) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
 
-─── KEY TAKEAWAYS — ALL OTHER QUERIES ───
-CFO analyst style — forward-looking, risk-aware, actionable. Max 4 bullets.
-Wrap variance values in color spans.
-End: <b>Recommended focus:</b> [specific action]
+description_sql:
+SELECT * FROM (
+    SELECT "l6_description","entity_name","location",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
+        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l8_account"='Recurring Revenue'
+    AND "ruc_risk"='RUC'
+    AND ("attrition_description" IS NULL OR TRIM("attrition_description")='')
+    GROUP BY "l6_description","entity_name","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l6_description", ABS("variance") DESC
 
-─── SUMMARY ───
-Format: <br><b>Summary</b><br>[2 sentences max]
-Always new line after Key Takeaways.
+--------------------------------------------------------
+Example 5 - ATTRITION VARIANCE (high_level_sql GROUP BY l6_description with attrition filter)
+--------------------------------------------------------
+User Question: What is the attrition variance between 1+11 and 2+10?
 
-─── CHART DATA ───
-Drivers: "chart_data":{"type":"waterfall"} only.
-Quarterly: type=line, columns=['Q1','Q2','Q3','Q4'], data=revenue per quarter.
-Monthly: type=line, data=revenue Jan-Dec order.
-Version comparison: type=bar, data=variance values per group.
-Never put year/sort_key/row_type/None in data array.
-Chart labels: use actual version strings e.g. "2+10", "1+11".
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l6_description",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l8_account" = 'Recurring Revenue'
+    AND "attrition_description" IN ('Specific attrition','Known attrition','attrition provision')
+    GROUP BY "l6_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text, ...
+) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+
+description_sql:
+SELECT * FROM (
+    SELECT "l6_description","entity_name","location",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
+        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l8_account"='Recurring Revenue'
+    AND "attrition_description" IN ('Specific attrition','Known attrition','attrition provision')
+    GROUP BY "l6_description","entity_name","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l6_description", ABS("variance") DESC
+
+--------------------------------------------------------
+Example 6 - RUC/RISK REVENUE (high_level_sql GROUP BY attrition_description, ruc_risk)
+--------------------------------------------------------
+User Question: Give revenue based on RUC/RISK
+
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "attrition_description", "ruc_risk",
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS revenue_M
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    AND "l8_account" = 'Recurring Revenue'
+    GROUP BY "attrition_description","ruc_risk"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text, NULL::text,
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
+    FROM finance.forecast_data_new
+    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    AND "l8_account" = 'Recurring Revenue'
+) t ORDER BY sort_key ASC, revenue_M DESC
+
+description_sql:
+SELECT * FROM (
+    SELECT "l6_description","entity_name","location",
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    AND "l8_account"='Recurring Revenue'
+    GROUP BY "l6_description","entity_name","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l6_description", "revenue_M" DESC
+
+--------------------------------------------------------
+Example 7 - TOP N PRODUCTS (high_level_sql GROUP BY l8_description)
+--------------------------------------------------------
+User Question: Give me top 5 products by revenue
+
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l8_description" AS product,
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS revenue_M
+    FROM finance.forecast_data_new
+    WHERE "version" = (SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    AND "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+    GROUP BY "l8_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total' AS product,
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS revenue_M
+    FROM finance.forecast_data_new
+    WHERE "version" = (SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    AND "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
+) t ORDER BY sort_key ASC, revenue_M DESC LIMIT 6
+
+description_sql:
+SELECT * FROM (
+    SELECT "l8_description","l9_account","location",
+        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+    FROM finance.forecast_data_new
+    WHERE "version"=(SELECT "version" FROM finance.forecast_data_new t2
+        WHERE t2."version" != 'Actuals'
+        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
+    AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    GROUP BY "l8_description","l9_account","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l8_description", "revenue_M" DESC
+
+=====================================================
+FINAL OUTPUT
+=====================================================
+Return ONLY JSON:
+{
+  "steps":["step1","step2","step3"],
+  "description_sql":"<VALID POSTGRESQL QUERY>"
+}
 """.strip()
