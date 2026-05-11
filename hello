@@ -1,377 +1,254 @@
-forecast_key_description_prompt = """
-You are an expert PostgreSQL SQL generator for finance data.
-TABLE: finance.forecast_data_new only. Double-quote ALL column names.
-Return ONLY JSON: {"steps":["..."], "description_sql":"SELECT ..."}
-No explanations, markdown, raw newlines.
-Forbidden SQL keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
-No DATE_TRUNC or date functions.
+import pandas as pd
+import numpy as np
 
-INPUT:
-User question: {question}
-High level sql query: {high_level_sql}
 
-Your task:
-1. Look at the GROUP BY column in high_level_sql.
-2. Look at the WHERE filters in high_level_sql.
-3. Generate description_sql using the drill down mapping below.
-4. Copy ALL filters from high_level_sql exactly into description_sql.
-5. Do not add LIMIT in description_sql.
-6. Do not add UNION ALL or Total row in description_sql.
-7. Wrap full SELECT in outer subquery so ORDER BY can reference aliases.
+def generate_commentary_package(
+    df: pd.DataFrame,
+    materiality_pct: float = 0.02,
+    max_drivers: int = 5,
+    target_metric: str | None = None,
+    baseline_metric: str | None = None,
+):
+    output = {}
 
-────────────────────────
-DRILL DOWN MAPPING
-────────────────────────
-high_level_sql GROUP BY "l5_description"
--> description_sql GROUP BY "l5_description","l9_account","location"
--> amount: both version amounts + variance (variance query)
+    # -----------------------------
+    # Detect column types
+    # -----------------------------
+    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    categorical_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    datetime_cols = df.select_dtypes(include=["datetime64", "datetime64[ns]"]).columns.tolist()
 
-high_level_sql GROUP BY "l6_description"
--> description_sql GROUP BY "l6_description","entity_name","location"
--> amount: both version amounts + variance (variance query) or revenue_M (single version)
+    if not numeric_cols:
+        return {"error": "No numeric columns available for analysis."}
 
-high_level_sql GROUP BY "l7_description" with entity_name filter (specific client)
--> description_sql GROUP BY "l7_description","l9_account","location" with same entity_name filter
--> amount: revenue_M (single version)
+    df = df.copy()
 
-high_level_sql GROUP BY "l7_description" without entity_name filter
--> description_sql GROUP BY "l7_description","l9_account","location"
--> amount: both version amounts + variance or revenue_M
+    # -------------------------------------------------
+    # Determine analysis mode
+    # -------------------------------------------------
+    variance_mode = False
 
-high_level_sql GROUP BY "entity_name" (top N clients)
--> description_sql GROUP BY "entity_name","l7_description","l9_account","location"
--> amount: revenue_M (single version)
+    if target_metric and baseline_metric:
+        variance_mode = True
+    elif "variance" in numeric_cols:
+        variance_mode = True
+        target_metric = target_metric or "variance"
 
-high_level_sql GROUP BY "attrition_description","ruc_risk"
--> description_sql GROUP BY "l6_description","entity_name","location"
--> keep same version, Year, l8_account filters
--> amount: revenue_M (single version)
+    # -------------------------------------------------
+    # VARIANCE MODE
+    # -------------------------------------------------
+    if variance_mode:
+        target_metric = target_metric or numeric_cols[0]
+        baseline_metric = baseline_metric or numeric_cols[1]
 
-high_level_sql GROUP BY "l8_description" or "product"
--> description_sql GROUP BY "l8_description","l9_account","location"
--> amount: revenue_M (single version)
+        if "variance" not in df.columns:
+            df["variance"] = df[target_metric] - df[baseline_metric]
 
-────────────────────────
-AMOUNT PATTERN
-────────────────────────
-If high_level_sql has two CASE WHEN version blocks (variance query):
-Include ALL THREE numeric columns:
-ROUND((SUM(CASE WHEN "version"=[V1] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V1]",
-ROUND((SUM(CASE WHEN "version"=[V2] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V2]",
-ROUND(((SUM(CASE WHEN "version"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-
-SUM(CASE WHEN "version"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+        df["variance_pct"] = np.where(
+            df[baseline_metric] != 0,
+            df["variance"] / df[baseline_metric],
+            np.nan
+        )
 
-If high_level_sql uses single version (revenue query):
-Include revenue_M only:
-ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
+        total_variance = df["variance"].sum()
 
-────────────────────────
-FILTER COPY RULE
-────────────────────────
-Copy exact version filter from high_level_sql. Do not change or replace.
-Copy exact "Year" filter from high_level_sql.
-Copy ALL other WHERE filters: "l8_account", "ruc_risk", "attrition_description", "entity_name".
+        output["summary"] = {
+            "analysis_type": "variance",
+            "target_metric": target_metric,
+            "baseline_metric": baseline_metric,
+            "total_variance": float(total_variance),
+            "variance_pct": float(
+                total_variance / df[baseline_metric].sum()
+                if df[baseline_metric].sum() != 0 else np.nan
+            ),
+            "direction": "Favorable" if total_variance > 0 else "Unfavorable"
+        }
 
-────────────────────────
-SQL RULES
-────────────────────────
-Rounding: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
-::numeric cast comes AFTER dividing by 1000000.0.
-Include HAVING SUM(COALESCE("amount",0))<>0
-No LIMIT in description_sql.
-No UNION ALL in description_sql.
-Wrap full SELECT in outer subquery so ORDER BY can reference column aliases:
-SELECT * FROM (
-    SELECT [cols], [amount_cols]
-    FROM finance.forecast_data_new
-    WHERE [filters]
-    GROUP BY [cols]
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY [first_group_col], ABS("variance") DESC
-or ORDER BY [first_group_col], "revenue_M" DESC
+        analysis_metric = "variance"
 
-=====================================================
-FEW-SHOT EXAMPLES
-=====================================================
+    # -------------------------------------------------
+    # NON-VARIANCE (METRIC LEVEL) MODE
+    # -------------------------------------------------
+    else:
+        analysis_metric = target_metric or numeric_cols[0]
 
---------------------------------------------------------
-Example 1 - GENERAL VARIANCE (high_level_sql GROUP BY l5_description)
---------------------------------------------------------
-User Question: What is the variance between 1+11 and 2+10?
+        total_value = df[analysis_metric].sum()
 
-Primary SQL (high_level_sql):
-SELECT * FROM (
-    SELECT 0 AS sort_key, "l5_description",
-        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
-    FROM finance.forecast_data_new
-    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    GROUP BY "l5_description"
-    HAVING SUM(COALESCE("amount",0))<>0
-    UNION ALL
-    SELECT 1 AS sort_key, 'Total'::text AS "l5_description", ...
-) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+        output["summary"] = {
+            "analysis_type": "metric_level",
+            "metric": analysis_metric,
+            "total_value": float(total_value)
+        }
 
-description_sql:
-SELECT * FROM (
-    SELECT "l5_description","l9_account","location",
-        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-    FROM finance.forecast_data_new
-    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    GROUP BY "l5_description","l9_account","location"
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY "l5_description", ABS("variance") DESC
+    # -------------------------------------------------
+    # Detect hierarchy — parent-child column relationships
+    # -------------------------------------------------
+    # Rules (in priority order):
+    # entity_name present -> l7_description and l9_account are children of entity_name
+    # l6_description present (no entity_name as top-level) -> entity_name is child of l6_description
+    # l5_description present -> l9_account is child of l5_description
+    # l7_description present (no entity_name) -> l9_account is child of l7_description
 
---------------------------------------------------------
-Example 2 - SPECIFIC CLIENT (high_level_sql GROUP BY l7_description with entity_name filter)
---------------------------------------------------------
-User Question: What is the revenue for The Bank of New York?
+    parent_child_map = {}
 
-Primary SQL (high_level_sql):
-SELECT * FROM (
-    SELECT 0 AS sort_key, "l7_description",
-        ROUND(CAST(SUM(COALESCE("amount",0))/1000000.0 AS numeric),2) AS "revenue_M"
-    FROM finance.forecast_data_new
-    WHERE "entity_name"='The Bank of New York Mellon'
-    AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    GROUP BY "l7_description"
-    HAVING SUM(COALESCE("amount",0))<>0
-    UNION ALL
-    SELECT 1, 'Total', ...
-) t ORDER BY sort_key ASC, "revenue_M" DESC LIMIT 11
+    if "entity_name" in categorical_cols and "l7_description" in categorical_cols:
+        # Top N clients case: entity_name is top level, l7 and l9 are children
+        parent_child_map["l7_description"] = "entity_name"
+        if "l9_account" in categorical_cols:
+            parent_child_map["l9_account"] = "entity_name"
 
-description_sql:
-SELECT * FROM (
-    SELECT "l7_description","l9_account","location",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-    FROM finance.forecast_data_new
-    WHERE "entity_name"='The Bank of New York Mellon'
-    AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    GROUP BY "l7_description","l9_account","location"
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY "l7_description", "revenue_M" DESC
+    elif "l6_description" in categorical_cols and "entity_name" in categorical_cols:
+        # RUC/Risk/Attrition case: l6 is top level, entity_name is child
+        parent_child_map["entity_name"] = "l6_description"
 
---------------------------------------------------------
-Example 3 - TOP N CLIENTS (high_level_sql GROUP BY entity_name)
---------------------------------------------------------
-User Question: Give me top 5 clients by revenue
+    elif "l5_description" in categorical_cols and "l9_account" in categorical_cols:
+        # General variance case: l5 is top level, l9_account is child
+        parent_child_map["l9_account"] = "l5_description"
 
-Primary SQL (high_level_sql):
-SELECT * FROM (
-    SELECT 0 AS sort_key, "entity_name",
-        ROUND(CAST(SUM(COALESCE("amount",0))/1000000.0 AS numeric),2) AS revenue_M
-    FROM finance.forecast_data_new
-    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    GROUP BY "entity_name"
-    HAVING SUM(COALESCE("amount",0))<>0
-    UNION ALL
-    SELECT 1 AS sort_key, 'Total'::text AS "entity_name",
-        ROUND(CAST(SUM(COALESCE("amount",0))/1000000.0 AS numeric),2) AS revenue_M
-    FROM finance.forecast_data_new
-    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-) t ORDER BY sort_key ASC, revenue_M DESC LIMIT 6
+    elif "l7_description" in categorical_cols and "l9_account" in categorical_cols:
+        # Specific client case: l7 is top level, l9_account is child
+        parent_child_map["l9_account"] = "l7_description"
 
-description_sql:
-SELECT * FROM (
-    SELECT "entity_name","l7_description","l9_account","location",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-    FROM finance.forecast_data_new
-    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    GROUP BY "entity_name","l7_description","l9_account","location"
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY "entity_name", "revenue_M" DESC
+    # Top-level columns: those not in parent_child_map values (i.e. not a child)
+    child_cols = set(parent_child_map.keys())
+    top_level_cols = [
+        c for c in categorical_cols
+        if c not in child_cols and c != "location"
+    ]
 
---------------------------------------------------------
-Example 4 - RUC VARIANCE (high_level_sql GROUP BY l6_description with ruc_risk filter)
---------------------------------------------------------
-User Question: What is the RUC variance between 1+11 and 2+10?
+    # -------------------------------------------------
+    # Driver Analysis
+    # -------------------------------------------------
+    drivers = {}
 
-Primary SQL (high_level_sql):
-SELECT * FROM (
-    SELECT 0 AS sort_key, "l6_description",
-        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
-    FROM finance.forecast_data_new
-    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "l8_account" = 'Recurring Revenue'
-    AND "ruc_risk" = 'RUC'
-    AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
-    GROUP BY "l6_description"
-    HAVING SUM(COALESCE("amount",0))<>0
-    UNION ALL
-    SELECT 1 AS sort_key, 'Total'::text, ...
-) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+    # Step 1: top-level columns (entity_name, l5_description, l6_description, l7_description)
+    for col in top_level_cols:
+        driver_df = (
+            df.groupby(col)
+              .agg(value=(analysis_metric, "sum"))
+              .reset_index()
+        )
 
-description_sql:
-SELECT * FROM (
-    SELECT "l6_description","entity_name","location",
-        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-    FROM finance.forecast_data_new
-    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "l8_account"='Recurring Revenue'
-    AND "ruc_risk"='RUC'
-    AND ("attrition_description" IS NULL OR TRIM("attrition_description")='')
-    GROUP BY "l6_description","entity_name","location"
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY "l6_description", ABS("variance") DESC
+        total = driver_df["value"].abs().sum()
+        driver_df["contribution_pct"] = (
+            driver_df["value"] / total if total != 0 else np.nan
+        )
 
---------------------------------------------------------
-Example 5 - ATTRITION VARIANCE (high_level_sql GROUP BY l6_description with attrition filter)
---------------------------------------------------------
-User Question: What is the attrition variance between 1+11 and 2+10?
+        driver_df = driver_df[
+            driver_df["contribution_pct"].abs() >= materiality_pct
+        ]
 
-Primary SQL (high_level_sql):
-SELECT * FROM (
-    SELECT 0 AS sort_key, "l6_description",
-        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
-    FROM finance.forecast_data_new
-    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "l8_account" = 'Recurring Revenue'
-    AND "attrition_description" IN ('Specific attrition','Known attrition','attrition provision')
-    GROUP BY "l6_description"
-    HAVING SUM(COALESCE("amount",0))<>0
-    UNION ALL
-    SELECT 1 AS sort_key, 'Total'::text, ...
-) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+        if driver_df.empty:
+            continue
 
-description_sql:
-SELECT * FROM (
-    SELECT "l6_description","entity_name","location",
-        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-    FROM finance.forecast_data_new
-    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "l8_account"='Recurring Revenue'
-    AND "attrition_description" IN ('Specific attrition','Known attrition','attrition provision')
-    GROUP BY "l6_description","entity_name","location"
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY "l6_description", ABS("variance") DESC
+        if variance_mode:
+            driver_df["direction"] = driver_df["value"].apply(
+                lambda x: "Favorable" if x > 0 else "Unfavorable"
+            )
 
---------------------------------------------------------
-Example 6 - RUC/RISK REVENUE (high_level_sql GROUP BY attrition_description, ruc_risk)
---------------------------------------------------------
-User Question: Give revenue based on RUC/RISK
+        drivers[col] = (
+            driver_df.sort_values("value", ascending=False)
+                     .head(max_drivers)
+                     .to_dict(orient="records")
+        )
 
-Primary SQL (high_level_sql):
-SELECT * FROM (
-    SELECT 0 AS sort_key, "attrition_description", "ruc_risk",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS revenue_M
-    FROM finance.forecast_data_new
-    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    AND "l8_account" = 'Recurring Revenue'
-    GROUP BY "attrition_description","ruc_risk"
-    HAVING SUM(COALESCE("amount",0))<>0
-    UNION ALL
-    SELECT 1 AS sort_key, 'Total'::text, NULL::text,
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
-    FROM finance.forecast_data_new
-    WHERE "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version" = (SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    AND "l8_account" = 'Recurring Revenue'
-) t ORDER BY sort_key ASC, revenue_M DESC
+    # Step 2: child columns (grouped by parent to preserve hierarchy)
+    for child_col, parent_col in parent_child_map.items():
+        if child_col not in categorical_cols or parent_col not in categorical_cols:
+            continue
 
-description_sql:
-SELECT * FROM (
-    SELECT "l6_description","entity_name","location",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-    FROM finance.forecast_data_new
-    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    AND "version"=(SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    AND "l8_account"='Recurring Revenue'
-    GROUP BY "l6_description","entity_name","location"
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY "l6_description", "revenue_M" DESC
+        driver_df = (
+            df.groupby([parent_col, child_col])
+              .agg(value=(analysis_metric, "sum"))
+              .reset_index()
+        )
 
---------------------------------------------------------
-Example 7 - TOP N PRODUCTS (high_level_sql GROUP BY l8_description)
---------------------------------------------------------
-User Question: Give me top 5 products by revenue
+        # contribution_pct is within each parent group
+        driver_df["contribution_pct"] = driver_df.groupby(parent_col)["value"].transform(
+            lambda x: x / x.abs().sum() if x.abs().sum() != 0 else np.nan
+        )
 
-Primary SQL (high_level_sql):
-SELECT * FROM (
-    SELECT 0 AS sort_key, "l8_description" AS product,
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS revenue_M
-    FROM finance.forecast_data_new
-    WHERE "version" = (SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    AND "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-    GROUP BY "l8_description"
-    HAVING SUM(COALESCE("amount",0))<>0
-    UNION ALL
-    SELECT 1 AS sort_key, 'Total' AS product,
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS revenue_M
-    FROM finance.forecast_data_new
-    WHERE "version" = (SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    AND "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-) t ORDER BY sort_key ASC, revenue_M DESC LIMIT 6
+        driver_df = driver_df[
+            driver_df["contribution_pct"].abs() >= materiality_pct
+        ]
 
-description_sql:
-SELECT * FROM (
-    SELECT "l8_description","l9_account","location",
-        ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-    FROM finance.forecast_data_new
-    WHERE "version"=(SELECT "version" FROM finance.forecast_data_new t2
-        WHERE t2."version" != 'Actuals'
-        ORDER BY CAST(SPLIT_PART(t2."version", '+', 1) AS INTEGER) DESC LIMIT 1)
-    AND "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-    GROUP BY "l8_description","l9_account","location"
-    HAVING SUM(COALESCE("amount",0))<>0
-) t
-ORDER BY "l8_description", "revenue_M" DESC
+        if driver_df.empty:
+            continue
 
-=====================================================
-FINAL OUTPUT
-=====================================================
-Return ONLY JSON:
-{
-  "steps":["step1","step2","step3"],
-  "description_sql":"<VALID POSTGRESQL QUERY>"
-}
-""".strip()
+        if variance_mode:
+            driver_df["direction"] = driver_df["value"].apply(
+                lambda x: "Favorable" if x > 0 else "Unfavorable"
+            )
+
+        drivers[child_col] = (
+            driver_df.sort_values([parent_col, "value"], ascending=[True, False])
+                     .groupby(parent_col)
+                     .head(max_drivers)
+                     .reset_index(drop=True)
+                     .to_dict(orient="records")
+        )
+
+    # Step 3: location (always top-level, independent)
+    if "location" in categorical_cols:
+        loc_df = (
+            df.groupby("location")
+              .agg(value=(analysis_metric, "sum"))
+              .reset_index()
+        )
+
+        total = loc_df["value"].abs().sum()
+        loc_df["contribution_pct"] = (
+            loc_df["value"] / total if total != 0 else np.nan
+        )
+
+        loc_df = loc_df[loc_df["contribution_pct"].abs() >= materiality_pct]
+
+        if not loc_df.empty:
+            if variance_mode:
+                loc_df["direction"] = loc_df["value"].apply(
+                    lambda x: "Favorable" if x > 0 else "Unfavorable"
+                )
+            drivers["location"] = (
+                loc_df.sort_values("value", ascending=False)
+                      .head(max_drivers)
+                      .to_dict(orient="records")
+            )
+
+    output["drivers"] = drivers
+
+    # -----------------------------
+    # Trend Analysis
+    # -----------------------------
+    if datetime_cols:
+        time_col = datetime_cols[0]
+        trend_series = (
+            df.sort_values(time_col)
+              .groupby(time_col)[analysis_metric]
+              .sum()
+        )
+        deltas = trend_series.diff().dropna()
+        output["trend_analysis"] = {
+            "trend_direction": (
+                "Increasing" if deltas.mean() > 0
+                else "Decreasing" if deltas.mean() < 0
+                else "Stable"
+            ),
+            "volatility": float(deltas.std())
+        }
+
+    # -----------------------------
+    # Stability Analysis
+    # -----------------------------
+    stability = {}
+
+    for col in categorical_cols:
+        std_dev = df.groupby(col)[analysis_metric].std().dropna()
+        if not std_dev.empty:
+            stability[col] = {
+                "stable": std_dev.nsmallest(3).index.tolist(),
+                "volatile": std_dev.nlargest(3).index.tolist()
+            }
+
+    output["stability"] = stability
+
+    return output
