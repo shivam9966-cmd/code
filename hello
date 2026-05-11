@@ -13,7 +13,7 @@ INPUT:
 Schema: {schema}
 Question: {question}
 
-TABLE: Always use forecast_data_updated. Do not use FROM table, FROM data, FROM <table>.
+TABLE: use forecast_data_updated. Do not use FROM table, FROM data, FROM <table>.
 SCHEMA: Double-quote ALL column names.
 OUTPUT: Return ONLY valid JSON: {"steps":["..."], "sql":"SELECT ..."}
 No explanation, comments, markdown, or raw newlines. Escape using \\n, \\t, \\\\.
@@ -76,7 +76,7 @@ AND "scenario" = (
 YEAR FILTER:
 FY26 or 2026 -> "year" = 'FY26'
 If user does not specify year -> "year" = (SELECT MAX("year") FROM forecast_data_updated)
-Year column is VARCHAR. Always use string values like 'FY26'.
+Year column is VARCHAR. use string values like 'FY26'.
 
 PERIOD COLUMN RULE:
 "period" column stores VARCHAR values: 'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'
@@ -87,13 +87,13 @@ Q3 -> "period" IN ('Jul','Aug','Sep')
 Q4 -> "period" IN ('Oct','Nov','Dec')
 
 REVENUE FILTER:
-Always filter "account_L5_Description" = 'Revenue' unless user asks for OpEx or EBITDA.
+Filter "account_L5_Description" = 'Revenue' unless user asks for OpEx or EBITDA.
 
 ACCOUNT FILTERING:
 Recurring revenue -> "account_L6_Description" = 'Recurring Revenue'
 Non-recurring revenue -> "account_L6_Description" = 'Non-Recurring Revenue'
 Specific account -> filter "account_L7_Description"
-Always use exact column for each level.
+use exact column for each level.
 
 PRODUCT FILTERING:
 If user states a product level explicitly -> filter that exact level.
@@ -112,17 +112,17 @@ Attrition provision -> "ruc_risk_attrition" = 'Attrition' AND "attrition_descrip
 
 RUC ATTRITION FILTER:
 When filtering ruc_risk_attrition = 'RUC':
-Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+Add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 When filtering ruc_risk_attrition = 'Risk':
-Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+Add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 
 ATTRITION NULL FILTER:
 When grouping by "attrition_description" ALONE:
-Always add: AND "attrition_description" IS NOT NULL AND "attrition_description" != '' AND TRIM("attrition_description") != ''
+Add: AND "attrition_description" IS NOT NULL AND "attrition_description" != '' AND TRIM("attrition_description") != ''
 
 UNION / ORDER BY / LIMIT (POSTGRESQL RULE):
 PostgreSQL does not allow ORDER BY or LIMIT directly before UNION or UNION ALL.
-Always wrap UNION ALL in outer subquery:
+wrap UNION ALL in outer subquery:
 Correct:
 SELECT * FROM (
     SELECT ... GROUP BY ...
@@ -137,7 +137,7 @@ SELECT ...
 
 NULL IN UNION ALL:
 Do not use bare NULL in UNION ALL alongside text columns.
-Always cast: NULL::text AS "col_name", NULL::numeric AS "col_name"
+cast: NULL::text AS "col_name", NULL::numeric AS "col_name"
 'Total' in UNION ALL always cast as: 'Total'::text
 
 VERSION COMPARISON (two scenarios):
@@ -166,7 +166,7 @@ For top N + Total row: use LIMIT N+1.
 
 ORDERING:
 Default ORDER BY revenue_M DESC.
-For periods: always use CASE WHEN period ordering.
+For periods: use CASE WHEN period ordering.
 Do not ORDER BY "period" alphabetically.
 
 QUARTERLY AGGREGATION RULE:
@@ -572,13 +572,13 @@ TABLE: forecast_data_updated only. Double-quote ALL column names.
 Rules:
 - Keep ALL existing filters from previous SQL (year, account_L5_Description, scenario context).
 - Only change GROUP BY/SELECT dimensions based on current question.
-- Do not use integer periods. Always use VARCHAR: 'Jan','Feb','Mar' etc.
+- Do not use integer periods. use VARCHAR: 'Jan','Feb','Mar' etc.
 - ATTRITION VALUES: exact DB values — 'Specific attrition', 'Known attrition', 'attrition provision'.
   Do not use LOWER() on "attrition_description".
 - ROUNDING: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric, 2). Do not use CAST.
 - LIMIT 10 for product/account/EntityName grouping. NO LIMIT for quarter/period/ruc_risk_attrition/attrition grouping.
-- Always include "year" filter in every CTE and subquery block.
-- Column aliases for scenario comparison: always use "latest" and "previous".
+- Include "year" filter in every CTE and subquery block.
+- Column aliases for scenario comparison: use "latest" and "previous".
 - NULL in UNION ALL: always cast NULL::text or NULL::numeric. No bare NULL.
 - 'Total' in UNION ALL: always cast 'Total'::text.
 - Generate ONE query only.
@@ -595,7 +595,7 @@ COLUMN NAME REMINDERS:
 
 RUC/RISK ATTRITION FILTER:
 If follow-up filters on ruc_risk_attrition = 'RUC' or 'Risk':
-Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+Add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 
 VERSION HANDLING:
 If previous SQL or current question has explicit scenario values -> use them directly.
@@ -616,7 +616,7 @@ Totals row via UNION ALL. LIMIT at very end only.
 
 
 forecast_sql_query_fixing_prompt = """
-Fix syntax/code issues in the following SQL for PostgreSQL. Do NOT change meaning or filters.
+Fix syntax/code issues in the following SQL for PostgreSQL. Do not change meaning or filters.
 Only fix actual syntax errors. Never regenerate a working SQL from scratch.
 
 TABLE: forecast_data_updated
@@ -672,9 +672,9 @@ prior  = (SELECT "scenario" FROM forecast_data_updated ORDER BY CAST(SPLIT_PART(
 YEAR HANDLING:
 If user query has explicit year -> use it directly (as VARCHAR e.g. 'FY26').
 If not -> use (SELECT MAX("year") FROM forecast_data_updated)
-Always include "year" filter.
+Include "year" filter.
 
-REVENUE FILTER: Always include "account_L5_Description" = 'Revenue' unless user asks OpEx/EBITDA.
+REVENUE FILTER: Include "account_L5_Description" = 'Revenue' unless user asks OpEx/EBITDA.
 RECURRING: "account_L6_Description" = 'Recurring Revenue'
 PERIOD: VARCHAR 'Jan','Feb' etc.
 ATTRITION VALUES: exact values — 'Specific attrition', 'Known attrition', 'attrition provision'.
@@ -683,7 +683,7 @@ NULL in UNION ALL: always cast NULL::text or NULL::numeric.
 
 RUC/RISK ATTRITION FILTER:
 If query involves ruc_risk_attrition = 'RUC' or 'Risk':
-Always add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+Add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 
 Rules:
 - Return ONLY JSON: {"steps":["..."], "sql":"SELECT ..."}
@@ -706,7 +706,7 @@ Description Table: {table_txt_desc}
 OUTPUT: ONLY valid JSON array.
 JSON: [{"question_asked_by_user":"<q>","question_asked_by_model":"<q>","sql_query":"<sql>","answer_by_model":"<HTML>"}]
 
-FIRST LINE (mandatory):
+FIRST LINE (required):
 <b>Answer generated for: Capital Markets Forecast | {version_context} | {attrition_type} | {ruc_risk_type}</b>
 
 version_context from SQL:
