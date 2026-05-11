@@ -4,7 +4,7 @@ import os
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 INPUT_FILE  = "forecast_data.xlsx"   # change to your actual filename
 OUTPUT_FILE = "forecast_data_unpivoted.csv"
-SHEET_NAME  = 0                       # first sheet; change if needed
+SHEET_NAME  = "CM Data Final"         # sheet name
 
 # ── COLUMNS THAT STAY FIXED (not unpivoted) ─────────────────────────────────
 ID_COLS = [
