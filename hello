@@ -1,254 +1,113 @@
 import pandas as pd
-import numpy as np
+import os
 
+# ── CONFIG ──────────────────────────────────────────────────────────────────
+INPUT_FILE  = "forecast_data.xlsx"   # change to your actual filename
+OUTPUT_FILE = "forecast_data_unpivoted.csv"
+SHEET_NAME  = 0                       # first sheet; change if needed
 
-def generate_commentary_package(
-    df: pd.DataFrame,
-    materiality_pct: float = 0.02,
-    max_drivers: int = 5,
-    target_metric: str | None = None,
-    baseline_metric: str | None = None,
-):
-    output = {}
+# ── COLUMNS THAT STAY FIXED (not unpivoted) ─────────────────────────────────
+ID_COLS = [
+    "Scenario",
+    "Version",
+    "Product Line",
+    "ORA_ACCOUNT",
+    "LOCATION",
+    "ORA_COMPANY",
+    "Cost center",
+    "ICP_HFM",
+    "EntityName",
+    "EMS_ID",
+    "Opportunity_ID",
+    "Product Description",
+    "Product_L3 Description",
+    "Product_L4 Description",
+    "Product_L5 Description",
+    "Product_L6 Description",
+    "Product_L7 Description",
+    "Product_L8 Description",
+    "Account_L5",
+    "Account_L6",
+    "Account_L7",
+    "Account_L8",
+    "Year",
+    "RUC RISK Attrition",
+    "ID_UUID",
+    "Attrition Description",
+]
 
-    # -----------------------------
-    # Detect column types
-    # -----------------------------
-    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-    categorical_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
-    datetime_cols = df.select_dtypes(include=["datetime64", "datetime64[ns]"]).columns.tolist()
+# Monthly columns to unpivot
+MONTH_COLS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-    if not numeric_cols:
-        return {"error": "No numeric columns available for analysis."}
+# Quarter columns — kept as reference, dropped after deriving from months
+QUARTER_COLS = ["Q1", "Q2", "Q3", "Q4"]
 
-    df = df.copy()
+# ── LOAD ────────────────────────────────────────────────────────────────────
+print(f"Reading {INPUT_FILE}...")
+df_raw = pd.read_excel(INPUT_FILE, sheet_name=SHEET_NAME, dtype=str)
 
-    # -------------------------------------------------
-    # Determine analysis mode
-    # -------------------------------------------------
-    variance_mode = False
+print(f"Raw shape: {df_raw.shape}")
+print(f"Columns found: {df_raw.columns.tolist()}")
 
-    if target_metric and baseline_metric:
-        variance_mode = True
-    elif "variance" in numeric_cols:
-        variance_mode = True
-        target_metric = target_metric or "variance"
+# ── VALIDATE COLUMNS ────────────────────────────────────────────────────────
+missing_id   = [c for c in ID_COLS    if c not in df_raw.columns]
+missing_mon  = [c for c in MONTH_COLS if c not in df_raw.columns]
 
-    # -------------------------------------------------
-    # VARIANCE MODE
-    # -------------------------------------------------
-    if variance_mode:
-        target_metric = target_metric or numeric_cols[0]
-        baseline_metric = baseline_metric or numeric_cols[1]
+if missing_id:
+    print(f"WARNING — these ID columns not found in file: {missing_id}")
+    ID_COLS = [c for c in ID_COLS if c in df_raw.columns]
 
-        if "variance" not in df.columns:
-            df["variance"] = df[target_metric] - df[baseline_metric]
+if missing_mon:
+    print(f"WARNING — these month columns not found in file: {missing_mon}")
+    MONTH_COLS = [c for c in MONTH_COLS if c in df_raw.columns]
 
-        df["variance_pct"] = np.where(
-            df[baseline_metric] != 0,
-            df["variance"] / df[baseline_metric],
-            np.nan
-        )
+# ── UNPIVOT (MELT) ───────────────────────────────────────────────────────────
+print("Unpivoting month columns...")
+df_melted = df_raw.melt(
+    id_vars=ID_COLS,
+    value_vars=MONTH_COLS,
+    var_name="month",
+    value_name="amount"
+)
 
-        total_variance = df["variance"].sum()
+# ── CLEAN AMOUNT ─────────────────────────────────────────────────────────────
+# Remove commas, spaces, handle blanks
+df_melted["amount"] = (
+    df_melted["amount"]
+    .astype(str)
+    .str.replace(",", "", regex=False)
+    .str.replace(" ", "", regex=False)
+    .str.strip()
+)
+df_melted["amount"] = pd.to_numeric(df_melted["amount"], errors="coerce").fillna(0)
 
-        output["summary"] = {
-            "analysis_type": "variance",
-            "target_metric": target_metric,
-            "baseline_metric": baseline_metric,
-            "total_variance": float(total_variance),
-            "variance_pct": float(
-                total_variance / df[baseline_metric].sum()
-                if df[baseline_metric].sum() != 0 else np.nan
-            ),
-            "direction": "Favorable" if total_variance > 0 else "Unfavorable"
-        }
+# ── LOWERCASE PRODUCT AND ACCOUNT COLUMN VALUES ──────────────────────────────
+product_cols = [c for c in df_melted.columns if "Product" in c and "Description" in c]
+account_cols = [c for c in df_melted.columns if "Account_" in c]
 
-        analysis_metric = "variance"
+for col in product_cols + account_cols:
+    df_melted[col] = df_melted[col].astype(str).str.lower().str.strip()
 
-    # -------------------------------------------------
-    # NON-VARIANCE (METRIC LEVEL) MODE
-    # -------------------------------------------------
-    else:
-        analysis_metric = target_metric or numeric_cols[0]
+print(f"Lowercased columns: {product_cols + account_cols}")
 
-        total_value = df[analysis_metric].sum()
+# ── DROP ZERO ROWS (optional — comment out if you want to keep them) ─────────
+before = len(df_melted)
+df_melted = df_melted[df_melted["amount"] != 0].reset_index(drop=True)
+after = len(df_melted)
+print(f"Dropped {before - after} zero-amount rows. Remaining: {after}")
 
-        output["summary"] = {
-            "analysis_type": "metric_level",
-            "metric": analysis_metric,
-            "total_value": float(total_value)
-        }
+# ── SORT ─────────────────────────────────────────────────────────────────────
+month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+               "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+df_melted["month_order"] = df_melted["month"].map(month_order)
+df_melted = df_melted.sort_values(
+    by=["EntityName", "Scenario", "Year", "month_order"]
+).drop(columns=["month_order"]).reset_index(drop=True)
 
-    # -------------------------------------------------
-    # Detect hierarchy — parent-child column relationships
-    # -------------------------------------------------
-    # Rules (in priority order):
-    # entity_name present -> l7_description and l9_account are children of entity_name
-    # l6_description present (no entity_name as top-level) -> entity_name is child of l6_description
-    # l5_description present -> l9_account is child of l5_description
-    # l7_description present (no entity_name) -> l9_account is child of l7_description
-
-    parent_child_map = {}
-
-    if "entity_name" in categorical_cols and "l7_description" in categorical_cols:
-        # Top N clients case: entity_name is top level, l7 and l9 are children
-        parent_child_map["l7_description"] = "entity_name"
-        if "l9_account" in categorical_cols:
-            parent_child_map["l9_account"] = "entity_name"
-
-    elif "l6_description" in categorical_cols and "entity_name" in categorical_cols:
-        # RUC/Risk/Attrition case: l6 is top level, entity_name is child
-        parent_child_map["entity_name"] = "l6_description"
-
-    elif "l5_description" in categorical_cols and "l9_account" in categorical_cols:
-        # General variance case: l5 is top level, l9_account is child
-        parent_child_map["l9_account"] = "l5_description"
-
-    elif "l7_description" in categorical_cols and "l9_account" in categorical_cols:
-        # Specific client case: l7 is top level, l9_account is child
-        parent_child_map["l9_account"] = "l7_description"
-
-    # Top-level columns: those not in parent_child_map values (i.e. not a child)
-    child_cols = set(parent_child_map.keys())
-    top_level_cols = [
-        c for c in categorical_cols
-        if c not in child_cols and c != "location"
-    ]
-
-    # -------------------------------------------------
-    # Driver Analysis
-    # -------------------------------------------------
-    drivers = {}
-
-    # Step 1: top-level columns (entity_name, l5_description, l6_description, l7_description)
-    for col in top_level_cols:
-        driver_df = (
-            df.groupby(col)
-              .agg(value=(analysis_metric, "sum"))
-              .reset_index()
-        )
-
-        total = driver_df["value"].abs().sum()
-        driver_df["contribution_pct"] = (
-            driver_df["value"] / total if total != 0 else np.nan
-        )
-
-        driver_df = driver_df[
-            driver_df["contribution_pct"].abs() >= materiality_pct
-        ]
-
-        if driver_df.empty:
-            continue
-
-        if variance_mode:
-            driver_df["direction"] = driver_df["value"].apply(
-                lambda x: "Favorable" if x > 0 else "Unfavorable"
-            )
-
-        drivers[col] = (
-            driver_df.sort_values("value", ascending=False)
-                     .head(max_drivers)
-                     .to_dict(orient="records")
-        )
-
-    # Step 2: child columns (grouped by parent to preserve hierarchy)
-    for child_col, parent_col in parent_child_map.items():
-        if child_col not in categorical_cols or parent_col not in categorical_cols:
-            continue
-
-        driver_df = (
-            df.groupby([parent_col, child_col])
-              .agg(value=(analysis_metric, "sum"))
-              .reset_index()
-        )
-
-        # contribution_pct is within each parent group
-        driver_df["contribution_pct"] = driver_df.groupby(parent_col)["value"].transform(
-            lambda x: x / x.abs().sum() if x.abs().sum() != 0 else np.nan
-        )
-
-        driver_df = driver_df[
-            driver_df["contribution_pct"].abs() >= materiality_pct
-        ]
-
-        if driver_df.empty:
-            continue
-
-        if variance_mode:
-            driver_df["direction"] = driver_df["value"].apply(
-                lambda x: "Favorable" if x > 0 else "Unfavorable"
-            )
-
-        drivers[child_col] = (
-            driver_df.sort_values([parent_col, "value"], ascending=[True, False])
-                     .groupby(parent_col)
-                     .head(max_drivers)
-                     .reset_index(drop=True)
-                     .to_dict(orient="records")
-        )
-
-    # Step 3: location (always top-level, independent)
-    if "location" in categorical_cols:
-        loc_df = (
-            df.groupby("location")
-              .agg(value=(analysis_metric, "sum"))
-              .reset_index()
-        )
-
-        total = loc_df["value"].abs().sum()
-        loc_df["contribution_pct"] = (
-            loc_df["value"] / total if total != 0 else np.nan
-        )
-
-        loc_df = loc_df[loc_df["contribution_pct"].abs() >= materiality_pct]
-
-        if not loc_df.empty:
-            if variance_mode:
-                loc_df["direction"] = loc_df["value"].apply(
-                    lambda x: "Favorable" if x > 0 else "Unfavorable"
-                )
-            drivers["location"] = (
-                loc_df.sort_values("value", ascending=False)
-                      .head(max_drivers)
-                      .to_dict(orient="records")
-            )
-
-    output["drivers"] = drivers
-
-    # -----------------------------
-    # Trend Analysis
-    # -----------------------------
-    if datetime_cols:
-        time_col = datetime_cols[0]
-        trend_series = (
-            df.sort_values(time_col)
-              .groupby(time_col)[analysis_metric]
-              .sum()
-        )
-        deltas = trend_series.diff().dropna()
-        output["trend_analysis"] = {
-            "trend_direction": (
-                "Increasing" if deltas.mean() > 0
-                else "Decreasing" if deltas.mean() < 0
-                else "Stable"
-            ),
-            "volatility": float(deltas.std())
-        }
-
-    # -----------------------------
-    # Stability Analysis
-    # -----------------------------
-    stability = {}
-
-    for col in categorical_cols:
-        std_dev = df.groupby(col)[analysis_metric].std().dropna()
-        if not std_dev.empty:
-            stability[col] = {
-                "stable": std_dev.nsmallest(3).index.tolist(),
-                "volatile": std_dev.nlargest(3).index.tolist()
-            }
-
-    output["stability"] = stability
-
-    return output
+# ── SAVE ─────────────────────────────────────────────────────────────────────
+df_melted.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
+print(f"\nDone. Saved to: {OUTPUT_FILE}")
+print(f"Final shape: {df_melted.shape}")
+print(f"\nSample output:")
+print(df_melted.head(5).to_string())
