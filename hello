@@ -255,7 +255,7 @@ DETECT TYPE FIRST:
 "account","recurring","non-recurring"    -> ACCOUNT   -> Q1 GROUP BY "product_L6_Description"
 "l5" or "product_L5" stated             -> PRODUCT   -> Q1 GROUP BY "product_L6_Description"
 other product level stated              -> PRODUCT   -> skip Q1, Q2 only
-none of above                           -> GENERAL   -> Q1 GROUP BY "product_L5_Description"
+none of above                           -> GENERAL   -> Q1 GROUP BY "account_L7_Description"
 
 QUERY 1 template (LIMIT 11):
 SELECT * FROM (
@@ -306,8 +306,8 @@ Q1: GROUP BY "EntityName" LIMIT N+1
 Q2: GROUP BY "EntityName","product_L7_Description","account_L7_Description" same filters NO LIMIT
 
 GENERAL VARIANCE:
-Q1: GROUP BY "product_L5_Description"
-Q2: GROUP BY "product_L5_Description","account_L7_Description" same filters
+Q1: GROUP BY "account_L7_Description"
+Q2: GROUP BY "ruc_risk_attrition","account_L7_Description","product_L5_Description","EntityName","location" same filters
 
 RUC/RISK/ATTRITION/ACCOUNT:
 Q1: GROUP BY "product_L6_Description" with relevant filters
@@ -394,8 +394,8 @@ Copy ALL WHERE filters from high_level_sql exactly:
 "product_L3_Description" through "product_L8_Description"
 
 DRILL DOWN MAPPING:
-high_level_sql GROUP BY "product_L5_Description"
--> description_sql GROUP BY "product_L5_Description","account_L7_Description","location"
+high_level_sql GROUP BY "account_L7_Description" (general variance)
+-> description_sql GROUP BY "ruc_risk_attrition","account_L7_Description","product_L5_Description","EntityName","location"
 -> amount: both scenario amounts + variance
 
 high_level_sql GROUP BY "product_L6_Description"
@@ -444,13 +444,19 @@ No LIMIT. No UNION ALL. Wrap in outer subquery for ORDER BY.
 FEW-SHOT EXAMPLES
 =====================================================
 
-Example 1 - GENERAL VARIANCE (GROUP BY product_L5_Description):
-User Question: What is the variance between 1+11 and 2+10?
-Primary SQL GROUP BY: "product_L5_Description", scenarios '2+10' vs '1+11'
+Example 1 - GENERAL VARIANCE (GROUP BY account_L7_Description):
+User Question: What is the variance between 1+11 and 2+10? / Give me comparison between current and prior forecast?
+Primary SQL GROUP BY: "account_L7_Description", scenarios '2+10' vs '1+11'
+
+description_sql groups by: "ruc_risk_attrition","account_L7_Description","product_L5_Description","EntityName","location"
+This single query supports:
+- Summary line: filter by ruc_risk_attrition to show RUC/Risk/Attrition variance
+- Account x Product insight: filter by account_L7_Description, group by product_L5_Description
+- Customer insight: filter by account_L7_Description, group by EntityName
 
 description_sql:
 SELECT * FROM (
-    SELECT "product_L5_Description","account_L7_Description","location",
+    SELECT "ruc_risk_attrition","account_L7_Description","product_L5_Description","EntityName","location",
         ROUND((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
         ROUND((SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
@@ -458,10 +464,10 @@ SELECT * FROM (
     FROM forecast_data_updated
     WHERE "year"=(SELECT MAX("year") FROM forecast_data_updated)
     AND "account_L5_Description"='Revenue'
-    GROUP BY "product_L5_Description","account_L7_Description","location"
+    GROUP BY "ruc_risk_attrition","account_L7_Description","product_L5_Description","EntityName","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
-ORDER BY "product_L5_Description", ABS("variance") DESC
+ORDER BY "account_L7_Description", ABS("variance") DESC
 
 Example 2 - SPECIFIC CLIENT (GROUP BY product_L7_Description with EntityName filter):
 User Question: What is the revenue for The Bank of New York?
@@ -758,11 +764,31 @@ KEY TAKEAWAYS — CASCADING 80% RULE:
 Use table_text for Level 1 and table_txt_desc for Level 2 and Level 3.
 
 QUESTION TYPE MAPPING:
-GENERAL VARIANCE   -> Level1=product_L5_Description | Level2=account_L7_Description per L5
-SPECIFIC CLIENT    -> Level1=product_L7_Description | Level2=account_L7_Description per L7
-TOP N CLIENTS      -> Level1=EntityName | Level2=product_L7_Description per client | Level3=account_L7_Description per L7
-RUC/RISK/ATTRITION -> Level1=product_L6_Description | Level2=EntityName per L6
-ACCOUNT ONLY       -> Level1=account_L7_Description | Level2=product_L6_Description per account
+GENERAL VARIANCE   -> table_text groups by account_L7_Description | table_txt_desc has ruc_risk_attrition + account_L7_Description + product_L5_Description + EntityName
+SPECIFIC CLIENT    -> table_text groups by product_L7_Description | table_txt_desc has product_L7_Description + account_L7_Description
+TOP N CLIENTS      -> table_text groups by EntityName | table_txt_desc has EntityName + product_L7_Description + account_L7_Description
+RUC/RISK/ATTRITION -> table_text groups by product_L6_Description | table_txt_desc has product_L6_Description + EntityName
+ACCOUNT ONLY       -> table_text groups by account_L7_Description | table_txt_desc has account_L7_Description + product_L6_Description
+
+GENERAL VARIANCE ANSWER STRUCTURE:
+Place this ABOVE the main table:
+<b>Summary:</b> Total variance between [V1] and [V2] is $[total]Mn ([variance_pct]%)<br>
+— RUC: $[ruc_variance]Mn | Risk: $[risk_variance]Mn | Attrition: $[attrition_variance]Mn
+(Calculate ruc/risk/attrition variance by filtering table_txt_desc on ruc_risk_attrition column and summing variance)
+
+Main table groups by account_L7_Description: account_L7 | V1($M) | V2($M) | Variance($M) | Variance%
+
+KEY TAKEAWAYS — ACCOUNT x PRODUCT INSIGHT:
+From table_txt_desc, for each key account_L7_Description (80% rule):
+  Filter table_txt_desc where account_L7_Description = that account.
+  Group by product_L5_Description, sum variance.
+  Pick product_L5 rows until cumulative >= 80% of that account variance. MAX 5. MIN 2.
+  Format: "[account_L7]: $XMn variance driven by [product_L5_A] $XMn and [product_L5_B] $XMn"
+
+KEY TAKEAWAYS — CUSTOMER LEVEL INSIGHT:
+From table_txt_desc, group by EntityName, sum variance across all accounts.
+Sort by ABS(variance) DESC. Pick top 5 customers.
+Format: "Key customers driving variance: [EntityName_A] $XMn, [EntityName_B] $XMn, [EntityName_C] -$XMn"
 
 STEP 1 — key drivers from table_text:
 Take Total row value as grand total.
@@ -771,7 +797,7 @@ Pick rows until cumulative ABS >= 80% of grand total. MAX 5. MIN 2.
 These are KEY ITEMS.
 
 STEP 2 — for each key item, drill down from table_txt_desc:
-Filter table_txt_desc where FIRST COLUMN exactly = key item name.
+Filter table_txt_desc where matching column exactly = key item name.
 Only use rows from that filtered set.
 Sum filtered rows to get that item's total.
 Sort by ABS(value) DESC.
@@ -784,8 +810,11 @@ Pick account_L7_Description rows until cumulative >= 80% of that L7's total. MAX
 STEP 4 — write bullets:
 
 GENERAL VARIANCE:
-"• <b>[product_L5_Description]</b> (<span style="color:green/red"><b>+/-$XM</b></span>):<br>
-  — [account_L7_Description_A] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>"
+Section header: <b>Account x Product Insight</b><br>
+"[account_L7_Description]: $XMn variance driven by [product_L5_A] $XMn and [product_L5_B] $XMn<br>"
+
+Section header: <b>Customer Level Insight</b><br>
+"Key customers driving variance: [EntityName_A] $XMn, [EntityName_B] $XMn, [EntityName_C] -$XMn<br>"
 
 SPECIFIC CLIENT:
 "• <b>[product_L7_Description]</b> ($XM):<br>
