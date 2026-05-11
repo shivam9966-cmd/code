@@ -68,7 +68,7 @@ DEFAULT SCENARIO RULE:
 When user does not specify a scenario, detect latest dynamically:
 AND "scenario" = (
     SELECT "scenario" FROM finance.forecast_data_updated t2
-    WHERE t2."scenario" NOT IN ('Actuals','Plan') AND t2."scenario" LIKE '%+%'
+    WHERE t2."scenario" IN ('1+11','2+10')
     ORDER BY CAST(SPLIT_PART(t2."scenario", '+', 1) AS INTEGER) DESC
     LIMIT 1
 )
@@ -482,7 +482,7 @@ SELECT * FROM (
     AND "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L5_Description"='Revenue'
     AND "scenario"=(SELECT "scenario" FROM finance.forecast_data_updated
-        WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%'
+        WHERE "scenario" IN ('1+11','2+10')
         ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
     GROUP BY "product_L7_Description","account_L7_Description","location"
     HAVING SUM(COALESCE("amount",0))<>0
@@ -500,7 +500,7 @@ SELECT * FROM (
     WHERE "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L5_Description"='Revenue'
     AND "scenario"=(SELECT "scenario" FROM finance.forecast_data_updated
-        WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%'
+        WHERE "scenario" IN ('1+11','2+10')
         ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
     GROUP BY "EntityName","product_L7_Description","account_L7_Description","location"
     HAVING SUM(COALESCE("amount",0))<>0
@@ -557,7 +557,7 @@ SELECT * FROM (
     WHERE "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L6_Description"='Recurring Revenue'
     AND "scenario"=(SELECT "scenario" FROM finance.forecast_data_updated
-        WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%'
+        WHERE "scenario" IN ('1+11','2+10')
         ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
     GROUP BY "product_L6_Description","EntityName","location"
     HAVING SUM(COALESCE("amount",0))<>0
@@ -609,8 +609,8 @@ Add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 VERSION HANDLING:
 If previous SQL or current question has explicit scenario values -> use them directly.
 If not:
-latest = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
-prior  = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
+latest = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" IN ('1+11','2+10') ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
+prior  = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" IN ('1+11','2+10') ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
 
 CHART TYPE RULE:
 - Quarterly/monthly trend -> LINE CHART
@@ -675,8 +675,8 @@ TABLE: forecast_data_updated
 SCENARIO HANDLING:
 If user query has explicit scenario values -> use them directly.
 If not:
-latest = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
-prior  = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
+latest = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" IN ('1+11','2+10') ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
+prior  = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" IN ('1+11','2+10') ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
 
 YEAR HANDLING:
 If user query has explicit year -> use it directly (as VARCHAR e.g. 'FY26').
