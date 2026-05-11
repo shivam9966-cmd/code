@@ -1,73 +1,164 @@
-forecasting_table_info = {
-    "schema": "public",
-    "table_name": "forecast_data_updated",
-    "table_description": (
-        "Capital Markets revenue forecasting fact table in long format. "
-        "Each row is a monthly revenue amount for a specific Scenario/Client/Product combination. "
-        "Data covers Capital Markets business unit only. "
-        "Scenario indicates the planning scenario: '1+11' or '2+10'. "
-        "Time is stored as separate year (VARCHAR e.g. 'FY26') and period (VARCHAR e.g. 'Jan') columns."
-    ),
-    "columns": {
-        "scenario":                    "VARCHAR (planning scenario e.g. '1+11', '2+10')",
-        "product_line":                "VARCHAR (product line ID)",
-        "ora_account":                 "VARCHAR (account ID)",
-        "location":                    "VARCHAR (location ID)",
-        "ora_company":                 "VARCHAR (company ID)",
-        "cost_center":                 "VARCHAR (cost center code)",
-        "icp_hfm":                     "VARCHAR (attrition code mapped to attrition_description)",
-        "attrition_description":       "VARCHAR (type of attrition — only populated when ruc_risk_attrition = 'Attrition'. Values: 'Known attrition', 'Specific attrition', 'attrition provision')",
-        "EntityName":                  "VARCHAR (client name)",
-        "ems_id":                      "VARCHAR",
-        "opportunity_id":              "VARCHAR",
-        "ruc_risk_attrition":          "VARCHAR (values: 'RUC', 'Risk', 'Attrition', blank/null)",
-        "id_uuid":                     "VARCHAR (only populated when ruc_risk_attrition = 'Risk'. Values: 'ID' = Risk Identified, 'UID' = Risk Unidentified)",
-        "product_Description":         "VARCHAR (most granular product description)",
-        "product_L3_Description":      "VARCHAR (always 'Capital Markets')",
-        "product_L4_Description":      "VARCHAR (product hierarchy level 4)",
-        "product_L5_Description":      "VARCHAR (product hierarchy level 5)",
-        "product_L6_Description":      "VARCHAR (product hierarchy level 6)",
-        "product_L7_Description":      "VARCHAR (product hierarchy level 7)",
-        "product_L8_Description":      "VARCHAR (product hierarchy level 8 — most granular named product)",
-        "account_L5_Description":      "VARCHAR (top account level — e.g. 'Revenue', 'Operating Expenses')",
-        "account_L6_Description":      "VARCHAR (account level 6 — e.g. 'Recurring Revenue', 'Non-Recurring Revenue')",
-        "account_L7_Description":      "VARCHAR (account level 7 — e.g. 'Transaction Processing and Broker Dealer Revenue')",
-        "account_L8_Description":      "VARCHAR (account level 8 — most granular account)",
-        "amount":                      "NUMERIC (revenue amount — always use SUM(COALESCE(\"amount\", 0)))",
-        "year":                        "VARCHAR (fiscal year e.g. 'FY26')",
-        "period":                      "VARCHAR (month e.g. 'Jan', 'Feb', ..., 'Dec')",
-    },
-    "query_rules": [
-        "Always query forecast_data_updated. No schema prefix needed.",
-        "Do NOT use columns that do not exist: month, Month, Year, version, entity_name, l5_description, l6_description, l7_description, l8_description, l9_account, l8_account, ruc_risk.",
-        "Use amount for all revenue aggregations: SUM(COALESCE(\"amount\", 0)).",
-        "Time filtering: use \"year\" (VARCHAR e.g. 'FY26') and \"period\" (VARCHAR e.g. 'Jan'). Never use DATE_TRUNC or date functions.",
-        "Scenario column holds planning scenario: '1+11' or '2+10' only.",
-        "Latest scenario = higher number before '+'. '2+10' is later than '1+11'.",
-        "Dynamic latest scenario subquery: SELECT \"scenario\" FROM forecast_data_updated t2 WHERE t2.\"scenario\" != 'Actuals' ORDER BY CAST(SPLIT_PART(t2.\"scenario\", '+', 1) AS INTEGER) DESC LIMIT 1",
-        "REVENUE FILTER: Always include \"account_L5_Description\" = 'Revenue' unless user asks for OpEx or EBITDA.",
-        "RECURRING REVENUE FILTER: When user says 'recurring revenue' -> filter \"account_L6_Description\" = 'Recurring Revenue'. When user says 'non-recurring' -> filter \"account_L6_Description\" = 'Non-Recurring Revenue'.",
-        "SPECIFIC ACCOUNT FILTER: Filter on \"account_L7_Description\" for specific account element queries.",
-        "RUC FILTER: \"ruc_risk_attrition\" = 'RUC' AND (\"attrition_description\" IS NULL OR TRIM(\"attrition_description\") = '')",
-        "RISK FILTER: \"ruc_risk_attrition\" = 'Risk' AND (\"attrition_description\" IS NULL OR TRIM(\"attrition_description\") = '')",
-        "RISK ID FILTER: \"ruc_risk_attrition\" = 'Risk' AND \"id_uuid\" = 'ID'",
-        "RISK UID FILTER: \"ruc_risk_attrition\" = 'Risk' AND \"id_uuid\" = 'UID'",
-        "ATTRITION FILTER: \"ruc_risk_attrition\" = 'Attrition'",
-        "KNOWN ATTRITION: \"ruc_risk_attrition\" = 'Attrition' AND \"attrition_description\" = 'Known attrition'",
-        "SPECIFIC ATTRITION: \"ruc_risk_attrition\" = 'Attrition' AND \"attrition_description\" = 'Specific attrition'",
-        "ATTRITION PROVISION: \"ruc_risk_attrition\" = 'Attrition' AND \"attrition_description\" = 'attrition provision'",
-        "Product drill-down hierarchy: product_L3_Description -> product_L4_Description -> product_L5_Description -> product_L6_Description -> product_L7_Description -> product_L8_Description -> EntityName.",
-        "Account drill-down hierarchy: account_L5_Description -> account_L6_Description -> account_L7_Description -> account_L8_Description.",
-        "For period output: GROUP BY \"year\", \"period\" and ORDER BY \"year\" ASC, period ASC using CASE WHEN month order.",
-        "For quarterly output: derive quarter using CASE WHEN on period. Never select period in quarterly queries.",
-        "Quarter mapping: Q1 -> 'Jan','Feb','Mar' | Q2 -> 'Apr','May','Jun' | Q3 -> 'Jul','Aug','Sep' | Q4 -> 'Oct','Nov','Dec'.",
-        "TOTALS ROW: Every tabular query must have UNION ALL with 'Total'::text label. Totals row always last using sort_key=1.",
-        "LIMIT only at the very end. Never inside individual SELECT in UNION ALL.",
-        "ORDER BY only once at the very end after all UNION ALL clauses.",
-        "SCENARIO COMPARISON: Use CASE WHEN — never IN() for both scenarios in one SUM.",
-        "Variance = latest_scenario - prior_scenario. Variance % = variance / NULLIF(prior_scenario, 0) * 100.",
-        "Double-quote ALL column names in SQL.",
-        "No dangerous keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.",
-        "ROUNDING: ROUND((SUM(COALESCE(\"amount\",0))/1000000.0)::numeric, 2) — ::numeric cast AFTER dividing by 1000000.0.",
-    ],
+import pandas as pd
+import os
+
+# ── CONFIG ──────────────────────────────────────────────────────────────────
+INPUT_FILE  = "forecast_data.xlsx"   # change to your actual filename
+OUTPUT_FILE = "forecast_data_unpivoted.csv"
+SHEET_NAME  = "CM Data Final"         # sheet name
+
+# ── COLUMNS THAT STAY FIXED (not unpivoted) ─────────────────────────────────
+ID_COLS = [
+    "Scenario",
+    "Version",
+    "Product Line",
+    "ORA_ACCOUNT",
+    "LOCATION",
+    "ORA_COMPANY",
+    "Cost center",
+    "ICP_HFM",
+    "EntityName",
+    "EMS_ID",
+    "Opportunity_ID",
+    "Product Description",
+    "Product_L3 Description",
+    "Product_L4 Description",
+    "Product_L5 Description",
+    "Product_L6 Description",
+    "Product_L7 Description",
+    "Product_L8 Description",
+    "Account_L5",
+    "Account_L6",
+    "Account_L7",
+    "Account_L8",
+    "Year",
+    "RUC RISK Attrition",
+    "ID_UUID",
+    "Attrition Description",
+]
+
+# Monthly columns to unpivot
+MONTH_COLS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# Quarter columns — kept as reference, dropped after deriving from months
+QUARTER_COLS = ["Q1", "Q2", "Q3", "Q4"]
+
+# ── LOAD ────────────────────────────────────────────────────────────────────
+print(f"Reading {INPUT_FILE}...")
+# Try reading with header on first row
+# If columns still show as Unnamed, change header=0 to header=1 or header=2
+df_raw = pd.read_excel(INPUT_FILE, sheet_name=SHEET_NAME, dtype=str, header=0)
+
+# If first row is blank/metadata, uncomment this instead:
+# df_raw = pd.read_excel(INPUT_FILE, sheet_name=SHEET_NAME, dtype=str, header=1)
+
+# Strip whitespace from all column names
+df_raw.columns = df_raw.columns.str.strip()
+
+print(f"Raw shape: {df_raw.shape}")
+print(f"Columns found: {df_raw.columns.tolist()}")
+
+# ── VALIDATE COLUMNS ────────────────────────────────────────────────────────
+missing_id   = [c for c in ID_COLS    if c not in df_raw.columns]
+missing_mon  = [c for c in MONTH_COLS if c not in df_raw.columns]
+
+if missing_id:
+    print(f"WARNING — these ID columns not found in file: {missing_id}")
+    ID_COLS = [c for c in ID_COLS if c in df_raw.columns]
+
+if missing_mon:
+    print(f"WARNING — these month columns not found in file: {missing_mon}")
+    MONTH_COLS = [c for c in MONTH_COLS if c in df_raw.columns]
+
+# ── UNPIVOT (MELT) ───────────────────────────────────────────────────────────
+print("Unpivoting month columns...")
+df_melted = df_raw.melt(
+    id_vars=ID_COLS,
+    value_vars=MONTH_COLS,
+    var_name="period",
+    value_name="amount"
+)
+
+# ── CLEAN AMOUNT ─────────────────────────────────────────────────────────────
+# Remove commas, spaces, handle blanks
+df_melted["amount"] = (
+    df_melted["amount"]
+    .astype(str)
+    .str.replace(",", "", regex=False)
+    .str.replace(" ", "", regex=False)
+    .str.replace("$", "", regex=False)
+    .str.strip()
+)
+df_melted["amount"] = pd.to_numeric(df_melted["amount"], errors="coerce").fillna(0.0)
+df_melted["amount"] = df_melted["amount"].astype(float)
+print(f"Amount dtype: {df_melted['amount'].dtype}")
+print(f"Amount sample: {df_melted['amount'].head(3).tolist()}")
+
+# ── LOWERCASE PRODUCT AND ACCOUNT COLUMN VALUES ──────────────────────────────
+product_cols = [c for c in df_melted.columns if "Product" in c and "Description" in c]
+account_cols = [c for c in df_melted.columns if "Account_" in c]
+
+for col in product_cols + account_cols:
+    df_melted[col] = df_melted[col].astype(str).str.lower().str.strip()
+
+print(f"Lowercased columns: {product_cols + account_cols}")
+
+# ── DROP ZERO ROWS (optional — comment out if you want to keep them) ─────────
+before = len(df_melted)
+df_melted = df_melted[df_melted["amount"] != 0].reset_index(drop=True)
+after = len(df_melted)
+print(f"Dropped {before - after} zero-amount rows. Remaining: {after}")
+
+# ── SORT ─────────────────────────────────────────────────────────────────────
+month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+               "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+df_melted["month_order"] = df_melted["period"].map(month_order)
+# Sort by available columns only
+sort_cols = [c for c in ["EntityName", "Scenario", "year", "month_order"] if c in df_melted.columns]
+df_melted = df_melted.sort_values(by=sort_cols).drop(columns=["month_order"], errors="ignore").reset_index(drop=True)
+
+# ── LOWERCASE ALL COLUMN NAMES ───────────────────────────────────────────────
+df_melted.columns = [c.lower() for c in df_melted.columns]
+print(f"Final columns: {df_melted.columns.tolist()}")
+
+# ── RENAME COLUMNS TO MATCH DB SCHEMA ───────────────────────────────────────
+column_rename_map = {
+    "scenario":                  "scenario",
+    "version":                   "scenario",           # in case old name appears
+    "product line":              "product_line",
+    "ora_account":               "ora_account",
+    "location":                  "location",
+    "ora_company":               "ora_company",
+    "cost center":               "cost_center",
+    "icp_hfm":                   "icp_hfm",
+    "entityname":                "EntityName",
+    "ems_id":                    "ems_id",
+    "opportunity_id":            "opportunity_id",
+    "product description":       "product_Description",
+    "product_l3 description":    "product_L3_Description",
+    "product_l4 description":    "product_L4_Description",
+    "product_l5 description":    "product_L5_Description",
+    "product_l6 description":    "product_L6_Description",
+    "product_l7 description":    "product_L7_Description",
+    "product_l8 description":    "product_L8_Description",
+    "account_l5":                "account_L5_Description",
+    "account_l6":                "account_L6_Description",
+    "account_l7":                "account_L7_Description",
+    "account_l8":                "account_L8_Description",
+    "year":                      "year",
+    "ruc risk attrition":        "ruc_risk_attrition",
+    "id_uuid":                   "id_uuid",
+    "attrition description":     "attrition_description",
+    "period":                    "period",
+    "amount":                    "amount",
 }
+
+df_melted.columns = [column_rename_map.get(c, c) for c in df_melted.columns]
+print(f"Renamed columns: {df_melted.columns.tolist()}")
+
+# ── SAVE ─────────────────────────────────────────────────────────────────────
+df_melted.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
+print(f"\nDone. Saved to: {OUTPUT_FILE}")
+print(f"Final shape: {df_melted.shape}")
+print(f"\nSample output:")
+print(df_melted.head(5).to_string())
