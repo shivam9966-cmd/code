@@ -67,15 +67,15 @@ Wrong: any arithmetic interpretation.
 DEFAULT SCENARIO RULE:
 When user does not specify a scenario, detect latest dynamically:
 AND "scenario" = (
-    SELECT "scenario" FROM forecast_data_updated t2
-    WHERE t2."scenario" != 'Actuals'
+    SELECT "scenario" FROM finance.forecast_data_updated t2
+    WHERE t2."scenario" NOT IN ('Actuals','Plan') AND t2."scenario" LIKE '%+%'
     ORDER BY CAST(SPLIT_PART(t2."scenario", '+', 1) AS INTEGER) DESC
     LIMIT 1
 )
 
 YEAR FILTER:
 FY26 or 2026 -> "year" = 'FY26'
-If user does not specify year -> "year" = (SELECT MAX("year") FROM forecast_data_updated)
+If user does not specify year -> "year" = (SELECT MAX("year") FROM finance.forecast_data_updated)
 Year column is VARCHAR. use string values like 'FY26'.
 
 PERIOD COLUMN RULE:
@@ -202,7 +202,7 @@ WITH summary AS (
     ROUND((SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS previous,
     ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS variance,
     ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS variance_pct
-    FROM forecast_data_updated
+    FROM finance.forecast_data_updated
     WHERE "year"='FY26' AND "account_L6_Description"='Recurring Revenue'
     GROUP BY "attrition_description","ruc_risk_attrition"
 ),
@@ -213,7 +213,7 @@ customer_ranked AS (
         PARTITION BY "attrition_description","ruc_risk_attrition"
         ORDER BY ABS(SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END)) DESC
     ) AS rnk
-    FROM forecast_data_updated
+    FROM finance.forecast_data_updated
     WHERE "year"='FY26' AND "account_L6_Description"='Recurring Revenue'
     GROUP BY "attrition_description","ruc_risk_attrition","EntityName"
 )
@@ -234,7 +234,7 @@ ROUND((SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/100
 ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2),
 ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2),
 NULL::text, NULL::numeric
-FROM forecast_data_updated
+FROM finance.forecast_data_updated
 WHERE "year"='FY26' AND "account_L6_Description"='Recurring Revenue'
 ) drivers_result
 ORDER BY
@@ -264,7 +264,7 @@ SELECT * FROM (
         ROUND((SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V2]",
         ROUND(((SUM(CASE WHEN "scenario"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
         ROUND(((SUM(CASE WHEN "scenario"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
-    FROM forecast_data_updated
+    FROM finance.forecast_data_updated
     WHERE "year"=[Y] AND "account_L5_Description"='Revenue' [+additional filters]
     GROUP BY [group_col]
     HAVING SUM(COALESCE("amount",0))<>0
@@ -274,7 +274,7 @@ SELECT * FROM (
         ROUND((SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
         ROUND(((SUM(CASE WHEN "scenario"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2),
         ROUND(((SUM(CASE WHEN "scenario"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2)
-    FROM forecast_data_updated
+    FROM finance.forecast_data_updated
     WHERE "year"=[Y] AND "account_L5_Description"='Revenue' [+same filters]
 ) t ORDER BY sort_key ASC, ABS("variance") DESC
 LIMIT 11
@@ -284,7 +284,7 @@ SELECT [group_col], "account_L7_Description",
     ROUND((SUM(CASE WHEN "scenario"=[V1] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V1]",
     ROUND((SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V2]",
     ROUND(((SUM(CASE WHEN "scenario"=[V1] THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "scenario"=[V2] THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-FROM forecast_data_updated
+FROM finance.forecast_data_updated
 WHERE "year"=[Y] AND "account_L5_Description"='Revenue' [+same filters]
 GROUP BY [group_col], "account_L7_Description"
 HAVING SUM(COALESCE("amount",0))<>0
@@ -461,8 +461,8 @@ SELECT * FROM (
         ROUND((SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
         SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-    FROM forecast_data_updated
-    WHERE "year"=(SELECT MAX("year") FROM forecast_data_updated)
+    FROM finance.forecast_data_updated
+    WHERE "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L5_Description"='Revenue'
     GROUP BY "ruc_risk_attrition","account_L7_Description","product_L5_Description","EntityName","location"
     HAVING SUM(COALESCE("amount",0))<>0
@@ -477,11 +477,12 @@ description_sql:
 SELECT * FROM (
     SELECT "product_L7_Description","account_L7_Description","location",
         ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-    FROM forecast_data_updated
+    FROM finance.forecast_data_updated
     WHERE "EntityName"='The Bank of New York Mellon'
-    AND "year"=(SELECT MAX("year") FROM forecast_data_updated)
+    AND "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L5_Description"='Revenue'
-    AND "scenario"=(SELECT "scenario" FROM forecast_data_updated
+    AND "scenario"=(SELECT "scenario" FROM finance.forecast_data_updated
+        WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%'
         ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
     GROUP BY "product_L7_Description","account_L7_Description","location"
     HAVING SUM(COALESCE("amount",0))<>0
@@ -495,10 +496,11 @@ description_sql:
 SELECT * FROM (
     SELECT "EntityName","product_L7_Description","account_L7_Description","location",
         ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-    FROM forecast_data_updated
-    WHERE "year"=(SELECT MAX("year") FROM forecast_data_updated)
+    FROM finance.forecast_data_updated
+    WHERE "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L5_Description"='Revenue'
-    AND "scenario"=(SELECT "scenario" FROM forecast_data_updated
+    AND "scenario"=(SELECT "scenario" FROM finance.forecast_data_updated
+        WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%'
         ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
     GROUP BY "EntityName","product_L7_Description","account_L7_Description","location"
     HAVING SUM(COALESCE("amount",0))<>0
@@ -515,8 +517,8 @@ SELECT * FROM (
         ROUND((SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
         SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-    FROM forecast_data_updated
-    WHERE "year"=(SELECT MAX("year") FROM forecast_data_updated)
+    FROM finance.forecast_data_updated
+    WHERE "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L5_Description"='Revenue'
     AND "ruc_risk_attrition"='RUC'
     AND ("attrition_description" IS NULL OR TRIM("attrition_description")='')
@@ -535,8 +537,8 @@ SELECT * FROM (
         ROUND((SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "scenario"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
         SUM(CASE WHEN "scenario"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-    FROM forecast_data_updated
-    WHERE "year"=(SELECT MAX("year") FROM forecast_data_updated)
+    FROM finance.forecast_data_updated
+    WHERE "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L5_Description"='Revenue'
     AND "ruc_risk_attrition"='Attrition'
     GROUP BY "product_L6_Description","EntityName","location"
@@ -551,10 +553,11 @@ description_sql:
 SELECT * FROM (
     SELECT "product_L6_Description","EntityName","location",
         ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-    FROM forecast_data_updated
-    WHERE "year"=(SELECT MAX("year") FROM forecast_data_updated)
+    FROM finance.forecast_data_updated
+    WHERE "year"=(SELECT MAX("year") FROM finance.forecast_data_updated)
     AND "account_L6_Description"='Recurring Revenue'
-    AND "scenario"=(SELECT "scenario" FROM forecast_data_updated
+    AND "scenario"=(SELECT "scenario" FROM finance.forecast_data_updated
+        WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%'
         ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
     GROUP BY "product_L6_Description","EntityName","location"
     HAVING SUM(COALESCE("amount",0))<>0
@@ -606,8 +609,8 @@ Add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
 VERSION HANDLING:
 If previous SQL or current question has explicit scenario values -> use them directly.
 If not:
-latest = (SELECT "scenario" FROM forecast_data_updated ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
-prior  = (SELECT "scenario" FROM forecast_data_updated ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
+latest = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
+prior  = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
 
 CHART TYPE RULE:
 - Quarterly/monthly trend -> LINE CHART
@@ -672,12 +675,12 @@ TABLE: forecast_data_updated
 SCENARIO HANDLING:
 If user query has explicit scenario values -> use them directly.
 If not:
-latest = (SELECT "scenario" FROM forecast_data_updated ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
-prior  = (SELECT "scenario" FROM forecast_data_updated ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
+latest = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1)
+prior  = (SELECT "scenario" FROM finance.forecast_data_updated WHERE "scenario" NOT IN ('Actuals','Plan') AND "scenario" LIKE '%+%' ORDER BY CAST(SPLIT_PART("scenario",'+',1) AS INTEGER) DESC LIMIT 1 OFFSET 1)
 
 YEAR HANDLING:
 If user query has explicit year -> use it directly (as VARCHAR e.g. 'FY26').
-If not -> use (SELECT MAX("year") FROM forecast_data_updated)
+If not -> use (SELECT MAX("year") FROM finance.forecast_data_updated)
 Include "year" filter.
 
 REVENUE FILTER: Include "account_L5_Description" = 'Revenue' unless user asks OpEx/EBITDA.
