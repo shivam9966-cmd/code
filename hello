@@ -1,76 +1,24 @@
-forecast_sql_generation_prompt = """
-You are an expert SQL generator for PostgreSQL.
-{resolved_block}
+# ============================================================
+# PASTE THESE 3 ADDITIONS INTO YOUR EXISTING PROMPT FILE
+# ============================================================
 
-INPUT:
-Schema: {schema}
-Question: {question}
+# ─────────────────────────────────────────────────────────────
+# ADDITION 1: Add to forecast_sql_generation_prompt
+# Paste this RIGHT BEFORE the line:
+# "GENERAL VARIANCE DETECTION:"
+# ─────────────────────────────────────────────────────────────
 
-TABLE: finance.forecast_data_new. Double-quote ALL column names.
-OUTPUT: Return ONLY valid JSON: {"steps":["..."], "sql":"SELECT ...", "sql2":"SELECT ..."}
-No explanation, comments, markdown, or raw newlines.
-
-Forbidden SQL keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
-
-COLUMN NAMES:
-"version"              -- '1+11' or '2+10'
-"Year"                 -- INTEGER e.g. 2026
-"month"                -- VARCHAR e.g. 'Jan','Feb'
-"amount"               -- NUMERIC
-"entity_name"          -- client name
-"l5_description"       -- product L5
-"l6_description"       -- product L6
-"l7_description"       -- product L7
-"l8_description"       -- product L8
-"l7_account"           -- Revenue / Operating Expenses
-"l8_account"           -- Recurring Revenue / Non-Recurring Revenue
-"l9_account"           -- account element e.g. Transaction Processing and Broker Dealer Revenue
-"ruc_risk"             -- 'RUC', 'Risk ID', 'Risk UID'
-"attrition_description"-- 'Known attrition', 'Specific attrition', 'attrition provision'
-"location"             -- location code
-
-ROUNDING: ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2)
-::numeric cast AFTER dividing by 1000000.0.
-
-VERSION RULE:
-'1+11' and '2+10' map to "version" column only.
-Latest version subquery:
-(SELECT "version" FROM finance.forecast_data_new WHERE "version" != 'Actuals'
- ORDER BY CAST(SPLIT_PART("version",'+',1) AS INTEGER) DESC LIMIT 1)
-
-YEAR FILTER:
-FY26 or 2026 -> "Year" = 2026
-If not specified -> "Year" = (SELECT MAX("Year") FROM finance.forecast_data_new)
-
-REVENUE FILTER:
-Include "l7_account" = 'Revenue' in all revenue queries.
-
-ACCOUNT FILTERING:
-Recurring -> "l8_account" = 'Recurring Revenue'
-Non-recurring -> "l8_account" = 'Non-Recurring Revenue'
-Specific account -> filter "l9_account"
-
-RUC/RISK ATTRITION FILTER:
-When filtering ruc_risk = 'RUC' or 'Risk ID' or 'Risk UID':
-Add: AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
-
-UNION ALL RULE:
-Wrap UNION ALL in outer subquery. ORDER BY only at the very end.
-NULL in UNION ALL: NULL::text or NULL::numeric. 'Total'::text always.
-
+ADDITION_1_SQL_GENERATION = """
 COMPARISON QUESTION DETECTION:
 When user says "comparison", "compare", "current vs prior", "current and prior",
-"1+11 vs 2+10", "2+10 vs 1+11", "latest vs prior", "forecast comparison":
-Generate a TWO SCENARIO variance query using CASE WHEN for both versions.
-Include variance and variance_pct columns.
-Do not generate NULL as previous or single scenario query.
+"latest vs prior", "forecast comparison", "1+11 vs 2+10", "2+10 vs 1+11":
+-> TYPE = GENERAL VARIANCE
+-> Q1 GROUP BY "l9_account" with both version amounts + variance + variance_pct
+-> Q2 GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
+-> Generate TWO scenario variance query using CASE WHEN for both versions
+-> Do not generate NULL as previous or single scenario query
 
-GENERAL VARIANCE QUESTION:
-When user asks general comparison/variance with no specific product or customer filter:
-Q1: GROUP BY "l9_account" (account level answer table)
-Q2 (description sql): GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
-
-Q1 template:
+GENERAL VARIANCE Q1 TEMPLATE:
 SELECT * FROM (
     SELECT 0 AS sort_key, "l9_account",
         ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
@@ -93,7 +41,7 @@ SELECT * FROM (
     AND "l7_account"='Revenue'
 ) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
 
-Q2 template (description sql — no limit):
+GENERAL VARIANCE Q2 TEMPLATE (description sql — pass as sql2):
 SELECT "ruc_risk","l9_account","l5_description","entity_name","location",
     ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
     ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
@@ -105,68 +53,27 @@ GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
 HAVING SUM(COALESCE("amount",0))<>0
 ORDER BY "l9_account", ABS("variance") DESC
 
-Return sql as Q1, sql2 as Q2 in JSON output.
-PHASE 3 SELF-VALIDATION: Fix before output.
-- ROUND uses ::numeric pattern
-- All column names double-quoted
-- No ORDER BY inside UNION ALL
-- 'Total'::text in UNION ALL
-- No forbidden keywords
-- ONE SQL per field only
+Return Q1 in "sql" field, Q2 in "sql2" field.
+JSON: {"steps":["..."], "sql":"<Q1>", "sql2":"<Q2>"}
 """
 
 
-forecast_key_description_prompt = """
-You are an expert PostgreSQL SQL generator for finance data.
-TABLE: finance.forecast_data_new only. Double-quote ALL column names.
-Return ONLY JSON: {"steps":["..."], "description_sql":"SELECT ..."}
-No explanations, markdown, raw newlines.
-Forbidden SQL keywords: drop, delete, truncate, alter, update, insert, create, replace, grant, revoke.
+# ─────────────────────────────────────────────────────────────
+# ADDITION 2: Replace Example 1 in forecast_key_description_prompt
+# Find: "Example 1 - GENERAL VARIANCE (high_level_sql GROUP BY l5_description)"
+# Replace the entire Example 1 block with this:
+# ─────────────────────────────────────────────────────────────
 
-INPUT:
-User question: {question}
-High level sql query: {high_level_sql}
+ADDITION_2_KEY_DESC_EXAMPLE_1 = """
+--------------------------------------------------------
+Example 1 - GENERAL VARIANCE (high_level_sql GROUP BY l9_account)
+--------------------------------------------------------
+User Question: Give me comparison between current and prior forecast for Capital Markets?
 
-COLUMN NAMES (old schema):
-"version","Year","month","amount","entity_name"
-"l5_description","l6_description","l7_description","l8_description"
-"l7_account","l8_account","l9_account"
-"ruc_risk","attrition_description","location"
+high_level_sql GROUP BY: "l9_account"
+high_level_sql versions: '2+10' vs '1+11'
+high_level_sql filters: "Year" = MAX(Year), "l7_account" = 'Revenue'
 
-DRILL DOWN MAPPING:
-high_level_sql GROUP BY "l9_account" (general variance)
--> description_sql GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
--> amount: both version amounts + variance
-
-high_level_sql GROUP BY "l7_description" with entity_name filter (specific client)
--> description_sql GROUP BY "l7_description","l9_account","location"
--> amount: revenue_M
-
-high_level_sql GROUP BY "entity_name" (top N clients)
--> description_sql GROUP BY "entity_name","l7_description","l9_account","location"
--> amount: revenue_M
-
-high_level_sql GROUP BY "l6_description" with ruc_risk filter
--> description_sql GROUP BY "l6_description","entity_name","location"
--> amount: both version amounts + variance
-
-high_level_sql GROUP BY "l5_description" (general product variance)
--> description_sql GROUP BY "l5_description","l9_account","location"
--> amount: both version amounts + variance
-
-AMOUNT PATTERN (variance query):
-ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-
-AMOUNT PATTERN (revenue query):
-ROUND((SUM(COALESCE("amount",0))/1000000.0)::numeric,2) AS "revenue_M"
-
-Copy ALL filters from high_level_sql exactly.
-No LIMIT. No UNION ALL. Wrap in outer subquery for ORDER BY.
-
-EXAMPLE — GENERAL VARIANCE (high_level_sql GROUP BY l9_account):
 description_sql:
 SELECT * FROM (
     SELECT "ruc_risk","l9_account","l5_description","entity_name","location",
@@ -181,66 +88,51 @@ SELECT * FROM (
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l9_account", ABS("variance") DESC
-
-Return ONLY JSON:
-{"steps":["step1","step2"], "description_sql":"<VALID POSTGRESQL QUERY>"}
 """
 
 
-forecast_response_generator_prompt = """
-You are a senior data analyst. Convert SQL output into a concise user-ready answer.
+# ─────────────────────────────────────────────────────────────
+# ADDITION 3: Add to forecast_response_generator_prompt
+# Paste this RIGHT BEFORE the line:
+# "════════════════════════════════════════"
+# "KEY TAKEAWAYS — CASCADING 80% RULE"
+# ─────────────────────────────────────────────────────────────
 
-INPUTS:
-Question: {user_query}
-SQL Used: {sql_query_txt}
-Table Output: {table_text}
-Description Table: {table_txt_desc}
+ADDITION_3_RESPONSE_GENERATOR = """
+════════════════════════════════════════
+GENERAL VARIANCE ANSWER FORMAT
+════════════════════════════════════════
+When question is a general forecast comparison (no specific product/customer filter)
+and main table groups by "l9_account":
 
-OUTPUT: ONLY valid JSON array.
-JSON: [{"question_asked_by_user":"<q>","question_asked_by_model":"<q>","sql_query":"<sql>","answer_by_model":"<HTML>"}]
-
-ANSWER STRUCTURE (exact order):
-Line 1: Header
-Line 2: Summary block (ABOVE the table)
-Line 3: Main HTML table
-Line 4: Key Takeaways
-Line 5: Summary sentence
-
-HEADER (always first):
-<b>Answer generated for: Capital Markets Forecast | Latest vs Prior Forecast | All Attrition Types | All RUC / Risk Types</b>
-
-SUMMARY BLOCK (place ABOVE the table):
+STEP 1 — SUMMARY BLOCK (place ABOVE the main table, after the one-liner):
 <b>Summary:</b><br>
-Total variance between 2+10 and 1+11 is $[total_variance]Mn ([variance_pct]%)<br>
-From table_txt_desc, calculate RUC/Risk/Attrition split:
-— Filter rows where "ruc_risk" = 'RUC' -> sum variance -> $[ruc_total]Mn came from RUC<br>
-— Filter rows where "ruc_risk" IN ('Risk ID','Risk UID') -> sum variance -> $[risk_total]Mn came from Risk<br>
-— Filter rows where "attrition_description" IS NOT NULL and NOT empty -> sum variance -> $[attr_total]Mn from Attrition<br>
-Format: "$[ruc]Mn came from RUC | $[risk]Mn came from Risk | $[attr]Mn from Attrition"
+Total variance between 2+10 and 1+11 is $[total]Mn ([variance_pct]%)<br>
+From table_txt_desc calculate RUC/Risk/Attrition split:
+- Filter rows where "ruc_risk" = 'RUC' -> sum "variance" -> RUC total
+- Filter rows where "ruc_risk" IN ('Risk ID','Risk UID') -> sum "variance" -> Risk total
+- Filter rows where "ruc_risk" is null/blank AND "attrition_description" IS NOT NULL AND NOT empty -> sum "variance" -> Attrition total
+Format: <b>$[ruc]Mn came from RUC | $[risk]Mn came from Risk | $[attr]Mn from Attrition</b><br>
 
-HTML TABLE:
-Numbers in $Mn. Color ALL numeric cells: positive-><td style="color:green">, negative-><td style="color:red">.
-Columns: L7 Account | 2+10 ($Mn) | 1+11 ($Mn) | Variance ($Mn) | Variance %
-Negative variance shown as (X.X) in red. Positive shown as X.X in green.
-Total row labeled "Grand Total", always last.
-Sort by ABS(variance) DESC. Show all rows.
+STEP 2 — MAIN TABLE:
+Columns: L9 Account | 2+10 ($Mn) | 1+11 ($Mn) | Variance ($Mn) | Variance %
+Sort by ABS(variance) DESC. Show all rows. Grand Total last.
+Negative in red. Positive in green.
 
-KEY TAKEAWAYS:
-Section 1 — <b>Account x Product Insight:</b><br>
-From table_txt_desc, for each key l9_account (top rows by ABS variance, 80% rule):
-  Filter table_txt_desc where l9_account = that account.
-  Group by l5_description, sum variance.
-  Pick l5 rows until cumulative >= 80% of that account variance. MAX 3.
-  Format: "[l9_account]: $XMn variance driven by [l5_A] $XMn and [l5_B] $XMn<br>"
+STEP 3 — KEY TAKEAWAYS:
 
-Section 2 — <b>Customer Level Insight:</b><br>
-From table_txt_desc, group by entity_name, sum variance across all accounts.
+Section 1 header: <b>Account x Product Insight</b><br>
+From table_txt_desc, for each key l9_account (80% rule from main table):
+  Filter table_txt_desc where "l9_account" = that account.
+  Group by "l5_description", sum "variance".
+  Sort by ABS(variance) DESC. Pick until cumulative >= 80% of that account variance. MAX 3.
+  Format: "[l9_account]: $XMn variance driven by [l5_A] $XMn and [l5_B] -$XMn<br>"
+
+Section 2 header: <b>Customer Level Insight</b><br>
+From table_txt_desc, group by "entity_name", sum "variance" across all l9_accounts.
 Sort by ABS(variance) DESC. Show top 5 customers.
 Format: "Key customers driving variance: [EntityA] $XMn, [EntityB] $XMn, [EntityC] -$XMn<br>"
 
 End with: <b>Recommended focus:</b> [one CFO-level actionable sentence]
-
-SUMMARY (last line):
-<br><b>Summary</b><br>[2 sentences max]
-
+════════════════════════════════════════
 """
