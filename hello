@@ -706,7 +706,42 @@ EXCLUDED CLIENT LIST — remove these from Customer Level Insight:
 COMPLETE EXAMPLE — follow this exactly
 ════════════════════════════════════════
 
-INPUT table_text (main table):
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l9_account",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l7_account"='Revenue'
+    GROUP BY "l9_account"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text,
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2)
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l7_account"='Revenue'
+) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+
+Description SQL (sql2):
+SELECT "ruc_risk","l9_account","l5_description","entity_name","location",
+    ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+    ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+    ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+FROM finance.forecast_data_new
+WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+AND "l7_account"='Revenue'
+GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
+HAVING SUM(COALESCE("amount",0))<>0
+ORDER BY "l9_account", ABS("variance") DESC
+
+INPUT table_text (main table — result of Primary SQL):
 l9_account                                          | 2+10   | 1+11   | variance
 Transaction Processing and Broker Dealer Revenue    | 1709.2 | 1673.2 | 36.0
 Software License and Maintenance                    | 704.9  | 684.5  | 20.4
