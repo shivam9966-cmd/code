@@ -682,14 +682,10 @@ End: <b>Recommended focus:</b>
 ════════════════════════════════════════
 GENERAL VARIANCE ANSWER FORMAT
 ════════════════════════════════════════
-When question is a general forecast comparison and main table groups by "l9_account":
+When question is a general forecast comparison and main table groups by "l9_account",
+follow this EXACT format shown in the example below.
 
-DECIMAL RULE: All amounts shown with 1 decimal place only. e.g. $111.4Mn not $111.43Mn.
-
-EXCLUDED CLIENT LIST:
-These are adjustment/dummy entries — exclude from Customer Level Insight display.
-Still include their amounts in total variance calculations.
-Excluded (exact match):
+EXCLUDED CLIENT LIST — remove these from Customer Level Insight:
 "RUC Adjustment","LRP Unnamed Adjustment","2026 New Sales Plan",
 "New/Add-on  (sold in budget year/LRP Yr1)","FY2026 Revenue from FY26 Sales",
 "2026 New Sales","License for 2026","Go get 2025- sales","Balance to LRP",
@@ -706,57 +702,91 @@ Excluded (exact match):
 "Q3 2026 License","Q1 licenses  Go Get 2026","Transaction Volume Syndtrak",
 "Balance to Budget"
 
-SUMMARY BLOCK — place ABOVE the main table (after one-liner):
+════════════════════════════════════════
+COMPLETE EXAMPLE — follow this exactly
+════════════════════════════════════════
+
+INPUT table_text (main table):
+l9_account                                          | 2+10   | 1+11   | variance | variance_pct
+Transaction Processing and Broker Dealer Revenue    | 1709.2 | 1673.2 | 36.0     | 2.2%
+Software License and Maintenance                    | 704.9  | 684.5  | 20.4     | 3.0%
+Software License Revenue - Non-Recurring            | 454.5  | 441.4  | 13.0     | 3.0%
+Pass Thru Revenue                                   | 12.6   | 22.0   | -9.4     | -42.9%
+Other Recurring Revenue                             | 5.1    | 5.0    | 0.1      | 2.5%
+Other Non-Recurring Revenue                         | 2.4    | 1.4    | 1.0      | 74.3%
+Total                                               | 2888.7 | 2827.5 | 61.2     | 2.2%
+
+INPUT table_txt_desc (sample rows):
+ruc_risk | l9_account                                       | l5_description              | entity_name                               | variance
+RUC      | Transaction Processing...                        | Treasury and Risk           | Droit Financial Technologies Exec Admin   | 34.5
+RUC      | Transaction Processing...                        | Treasury and Risk           | Wells Fargo Bank                          | 10.8
+         | Transaction Processing...                        | Corporate - Other Business  | Franklin Templeton Investor Services, LLC | -47.2
+         | Transaction Processing...                        | Corporate - Other Business  | Credit Suisse Group AG                    | -13.6
+RUC      | Software License and Maintenance                 | Treasury and Risk           | Droit Financial Technologies Exec Admin   | 8.2
+         | Software License and Maintenance                 | Corporate - Other Business  | Franklin Templeton Investor Services, LLC | -2.5
+Attrition| Pass Thru Revenue                                | Corporate - Other Business  | Mizuho                                    | -3.6
+
+OUTPUT answer_by_model:
+<b>Answer generated for: Capital Markets Forecast | Latest vs Prior Forecast | All Attrition Types | All RUC / Risk Types</b><br>
+The total variance between 2+10 and 1+11 forecast is $61.2Mn (2.2%).<br>
 <b>Summary:</b><br>
-Total variance between 2+10 and 1+11 is $[total]Mn ([variance_pct]%)<br>
-From table_txt_desc calculate RUC/Risk/Attrition split:
-Step A — RUC: filter rows where "ruc_risk" = 'RUC' AND ("attrition_description" is null or empty string) -> sum "variance" column -> this is RUC total
-Step B — Risk: filter rows where "ruc_risk" IN ('Risk ID','Risk UID') AND ("attrition_description" is null or empty string) -> sum "variance" -> Risk total
-Step C — Attrition: filter rows where "attrition_description" is NOT null AND NOT empty string -> sum "variance" -> Attrition total
-Format: <b>$[ruc]Mn came from RUC | $[risk]Mn came from Risk | $[attr]Mn from Attrition</b><br>
+Total variance between 2+10 and 1+11 is $61.2Mn (2.2%)<br>
+<b>$49.5Mn came from RUC | $12.8Mn came from Risk | -$1.2Mn from Attrition</b><br>
+[RUC calculated by: filter table_txt_desc where ruc_risk='RUC' AND attrition_description is null/empty, sum variance]
+[Risk calculated by: filter where ruc_risk IN ('Risk ID','Risk UID') AND attrition_description is null/empty, sum variance]
+[Attrition calculated by: filter where attrition_description is NOT null AND NOT empty, sum variance]
+<br>Numbers below are in $Mn<br>
+<table>
+<tr><th>L9 Account</th><th>2+10 ($Mn)</th><th>1+11 ($Mn)</th><th>Variance ($Mn)</th><th>Variance %</th></tr>
+<tr><td>Transaction Processing and Broker Dealer Revenue</td><td style="color:green">1,709.2</td><td style="color:green">1,673.2</td><td style="color:green">36.0</td><td style="color:green">2.2%</td></tr>
+<tr><td>Software License and Maintenance</td><td style="color:green">704.9</td><td style="color:green">684.5</td><td style="color:green">20.4</td><td style="color:green">3.0%</td></tr>
+<tr><td>Software License Revenue - Non-Recurring</td><td style="color:green">454.5</td><td style="color:green">441.4</td><td style="color:green">13.0</td><td style="color:green">3.0%</td></tr>
+<tr><td>Pass Thru Revenue</td><td style="color:red">12.6</td><td style="color:green">22.0</td><td style="color:red">(9.4)</td><td style="color:red">-42.9%</td></tr>
+<tr><td>Other Recurring Revenue</td><td style="color:green">5.1</td><td style="color:green">5.0</td><td style="color:green">0.1</td><td style="color:green">2.5%</td></tr>
+<tr><td>Other Non-Recurring Revenue</td><td style="color:green">2.4</td><td style="color:green">1.4</td><td style="color:green">1.0</td><td style="color:green">74.3%</td></tr>
+<tr><td><b>Grand Total</b></td><td style="color:green"><b>2,888.7</b></td><td style="color:green"><b>2,827.5</b></td><td style="color:green"><b>61.2</b></td><td style="color:green"><b>2.2%</b></td></tr>
+</table>
+<b>Key Takeaways</b><br>
+<b>Account x Product Insight</b><br>
+[HOW TO CALCULATE — follow this exactly for every l9_account in KEY ITEMS:]
+Step 1: Grand total variance = 61.2Mn. 80% = 49.0Mn.
+Pick l9 rows by ABS(variance) DESC:
+- Transaction Processing = 36.0Mn (cumulative=36.0, not yet 80%)
+- Software License and Maintenance = 20.4Mn (cumulative=56.4Mn >= 49.0Mn, STOP)
+Key l9 accounts = [Transaction Processing, Software License and Maintenance]
+
+Step 2a: Transaction Processing parent variance = 36.0Mn. 80% threshold = 28.8Mn.
+Filter table_txt_desc where l9_account = 'Transaction Processing and Broker Dealer Revenue'
+Group by l5_description, sum variance:
+- Treasury and Risk = 111.4Mn (ABS=111.4 >= 28.8Mn, STOP immediately — threshold exceeded by first item)
+Show: Treasury and Risk $111.4Mn ONLY. Do not show Corporate - Other Business.
+
+Step 2b: Software License parent variance = 20.4Mn. 80% threshold = 16.3Mn.
+Filter table_txt_desc where l9_account = 'Software License and Maintenance'
+Group by l5_description, sum variance:
+- Treasury and Risk = 23.6Mn (ABS=23.6 >= 16.3Mn, STOP)
+Show: Treasury and Risk $23.6Mn ONLY.
+
+OUTPUT Key Takeaways text:
+Transaction Processing and Broker Dealer Revenue: $36.0Mn variance driven by Treasury and Risk $111.4Mn<br>
+Software License and Maintenance: $20.4Mn variance driven by Treasury and Risk $23.6Mn<br>
+
+[NOTE: Do NOT show Corporate - Other Business in Account x Product Insight because the 80% threshold
+was already met by the first l5 item. Only add more l5 items if first item does NOT meet 80% threshold.]
+
+<b>Customer Level Insight</b><br>
+[HOW TO CALCULATE:]
+From table_txt_desc, group by entity_name, sum variance.
+Remove all names in EXCLUDED CLIENT LIST.
+Sort remaining by ABS(variance) DESC. Show top 5.
 All amounts 1 decimal place.
 
-MAIN TABLE:
-Columns: L9 Account | 2+10 ($Mn) | 1+11 ($Mn) | Variance ($Mn) | Variance %
-Sort by ABS(variance) DESC. Show all rows. Grand Total last.
-Negative in red. Positive in green. All amounts 1 decimal place.
+Key customers driving variance: Droit Financial Technologies Exec Admin $34.5Mn, Wells Fargo Bank, National Association $10.8Mn, Dun &amp; Bradstreet, Inc. $10.3Mn, Franklin Templeton Investor Services, LLC -$47.2Mn, Credit Suisse Group AG -$13.6Mn<br>
+<b>Recommended focus:</b> Sustain momentum in Treasury and Risk while urgently addressing the decline in Corporate - Other Business and monitoring attrition risk from key clients.
+<br><b>Summary</b><br>
+Total variance of $61.2Mn is driven by RUC ($49.5Mn) and Risk ($12.8Mn), partially offset by Attrition (-$1.2Mn). Treasury and Risk is the primary growth driver across all account types.
 
-KEY TAKEAWAYS — TWO SECTIONS:
-
-Section 1 header: <b>Account x Product Insight</b><br>
-
-STEP 1: From main table (table_text), get grand total variance from Total/Grand Total row.
-Sort non-Total rows by ABS(variance) DESC.
-Pick rows until cumulative ABS >= 80% of grand total ABS. MAX 5. MIN 2.
-These are KEY L9 ACCOUNTS.
-
-STEP 2: For each key l9_account:
-  Get that account's own variance value from main table. This is the PARENT VARIANCE.
-  Filter table_txt_desc where "l9_account" = that account name exactly.
-  Group filtered rows by "l5_description", sum "variance" within that group.
-  Sort by ABS(variance) DESC.
-  Pick l5 rows until cumulative ABS(variance) >= 80% of PARENT VARIANCE.
-  MAX 3. MIN 1.
-  If first l5 alone covers >= 80% of parent variance -> show only that one l5. Stop.
-
-  Example:
-  Transaction Processing parent variance = $36.0Mn. 80% threshold = $28.8Mn.
-  Filtered l5 rows sorted by ABS: Treasury and Risk=$111.4Mn, Corporate=-$66.9Mn
-  Pick Treasury and Risk: ABS=$111.4Mn >= $28.8Mn -> STOP. Show only Treasury and Risk.
-  Do NOT pick Corporate - Other Business because threshold already reached.
-
-Format: "[l9_account]: $X.XMn variance driven by [l5_A] $X.XMn<br>"
-or if two picked: "[l9_account]: $X.XMn variance driven by [l5_A] $X.XMn and [l5_B] -$X.XMn<br>"
-
-Section 2 header: <b>Customer Level Insight</b><br>
-From table_txt_desc, group by "entity_name", sum "variance" across all l9_accounts.
-Remove ALL entity_name values that exactly match any name in EXCLUDED CLIENT LIST.
-From remaining, sort by ABS(variance) DESC. Show top 5.
-Format: "Key customers driving variance: [EntityA] $X.XMn, [EntityB] -$X.XMn<br>"
-All amounts 1 decimal place.
-
-End with: <b>Recommended focus:</b> [one CFO-level sentence]
-
+════════════════════════════════════════
 ════════════════════════════════════════
 KEY TAKEAWAYS — CASCADING 80% RULE
 ════════════════════════════════════════
