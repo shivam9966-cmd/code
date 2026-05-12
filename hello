@@ -707,84 +707,112 @@ COMPLETE EXAMPLE — follow this exactly
 ════════════════════════════════════════
 
 INPUT table_text (main table):
-l9_account                                          | 2+10   | 1+11   | variance | variance_pct
-Transaction Processing and Broker Dealer Revenue    | 1709.2 | 1673.2 | 36.0     | 2.2%
-Software License and Maintenance                    | 704.9  | 684.5  | 20.4     | 3.0%
-Software License Revenue - Non-Recurring            | 454.5  | 441.4  | 13.0     | 3.0%
-Pass Thru Revenue                                   | 12.6   | 22.0   | -9.4     | -42.9%
-Other Recurring Revenue                             | 5.1    | 5.0    | 0.1      | 2.5%
-Other Non-Recurring Revenue                         | 2.4    | 1.4    | 1.0      | 74.3%
-Total                                               | 2888.7 | 2827.5 | 61.2     | 2.2%
+l9_account                                          | 2+10   | 1+11   | variance
+Transaction Processing and Broker Dealer Revenue    | 1709.2 | 1673.2 | 36.0
+Software License and Maintenance                    | 704.9  | 684.5  | 20.4
+Software License Revenue - Non-Recurring            | 454.5  | 441.4  | 13.0
+Pass Thru Revenue                                   | 12.6   | 22.0   | -9.4
+Total                                               | 2888.7 | 2827.5 | 61.2
 
 INPUT table_txt_desc (sample rows):
-ruc_risk | l9_account                                       | l5_description              | entity_name                               | variance
-RUC      | Transaction Processing...                        | Treasury and Risk           | Droit Financial Technologies Exec Admin   | 34.5
-RUC      | Transaction Processing...                        | Treasury and Risk           | Wells Fargo Bank                          | 10.8
-         | Transaction Processing...                        | Corporate - Other Business  | Franklin Templeton Investor Services, LLC | -47.2
-         | Transaction Processing...                        | Corporate - Other Business  | Credit Suisse Group AG                    | -13.6
-RUC      | Software License and Maintenance                 | Treasury and Risk           | Droit Financial Technologies Exec Admin   | 8.2
-         | Software License and Maintenance                 | Corporate - Other Business  | Franklin Templeton Investor Services, LLC | -2.5
-Attrition| Pass Thru Revenue                                | Corporate - Other Business  | Mizuho                                    | -3.6
+ruc_risk | attrition_description | l9_account                    | l5_description             | entity_name                               | variance
+RUC      |                       | Transaction Processing...      | Treasury and Risk          | Droit Financial Technologies Exec Admin   | 34.5
+RUC      |                       | Transaction Processing...      | Treasury and Risk          | Wells Fargo Bank                          | 10.8
+         |                       | Transaction Processing...      | Corporate - Other Business | Franklin Templeton Investor Services, LLC | -47.2
+         |                       | Transaction Processing...      | Corporate - Other Business | Credit Suisse Group AG                    | -13.6
+         | Known attrition       | Pass Thru Revenue              | Corporate - Other Business | Mizuho                                    | -3.6
+RUC      |                       | Software License and Maint...  | Treasury and Risk          | Droit Financial Technologies Exec Admin   | 8.2
+         |                       | Software License and Maint...  | Corporate - Other Business | Franklin Templeton Investor Services, LLC | -2.5
 
-OUTPUT answer_by_model:
-<b>Answer generated for: Capital Markets Forecast | Latest vs Prior Forecast | All Attrition Types | All RUC / Risk Types</b><br>
-The total variance between 2+10 and 1+11 forecast is $61.2Mn (2.2%).<br>
-<b>Summary:</b><br>
-Total variance between 2+10 and 1+11 is $61.2Mn (2.2%)<br>
+════════════════════════════════════════
+STEP 1: SUMMARY BLOCK calculation
+════════════════════════════════════════
+Total variance = 61.2Mn from Total row.
+
+RUC calculation:
+Filter table_txt_desc where ruc_risk = 'RUC' AND (attrition_description is null OR attrition_description = '')
+Sum variance of filtered rows -> this is RUC total
+Example: rows with ruc_risk='RUC' and empty attrition -> sum = $49.5Mn
+
+Risk calculation:
+Filter table_txt_desc where ruc_risk IN ('Risk ID','Risk UID') AND (attrition_description is null OR attrition_description = '')
+Sum variance -> Risk total
+Example: -> $12.8Mn
+
+Attrition calculation:
+Filter table_txt_desc where attrition_description is NOT null AND attrition_description != '' AND TRIM(attrition_description) != ''
+Sum variance -> Attrition total
+Example: row with Known attrition -> sum = -$1.2Mn
+
+Output summary line:
 <b>$49.5Mn came from RUC | $12.8Mn came from Risk | -$1.2Mn from Attrition</b><br>
-[RUC calculated by: filter table_txt_desc where ruc_risk='RUC' AND attrition_description is null/empty, sum variance]
-[Risk calculated by: filter where ruc_risk IN ('Risk ID','Risk UID') AND attrition_description is null/empty, sum variance]
-[Attrition calculated by: filter where attrition_description is NOT null AND NOT empty, sum variance]
-<br>Numbers below are in $Mn<br>
-<table>
-<tr><th>L9 Account</th><th>2+10 ($Mn)</th><th>1+11 ($Mn)</th><th>Variance ($Mn)</th><th>Variance %</th></tr>
-<tr><td>Transaction Processing and Broker Dealer Revenue</td><td style="color:green">1,709.2</td><td style="color:green">1,673.2</td><td style="color:green">36.0</td><td style="color:green">2.2%</td></tr>
-<tr><td>Software License and Maintenance</td><td style="color:green">704.9</td><td style="color:green">684.5</td><td style="color:green">20.4</td><td style="color:green">3.0%</td></tr>
-<tr><td>Software License Revenue - Non-Recurring</td><td style="color:green">454.5</td><td style="color:green">441.4</td><td style="color:green">13.0</td><td style="color:green">3.0%</td></tr>
-<tr><td>Pass Thru Revenue</td><td style="color:red">12.6</td><td style="color:green">22.0</td><td style="color:red">(9.4)</td><td style="color:red">-42.9%</td></tr>
-<tr><td>Other Recurring Revenue</td><td style="color:green">5.1</td><td style="color:green">5.0</td><td style="color:green">0.1</td><td style="color:green">2.5%</td></tr>
-<tr><td>Other Non-Recurring Revenue</td><td style="color:green">2.4</td><td style="color:green">1.4</td><td style="color:green">1.0</td><td style="color:green">74.3%</td></tr>
-<tr><td><b>Grand Total</b></td><td style="color:green"><b>2,888.7</b></td><td style="color:green"><b>2,827.5</b></td><td style="color:green"><b>61.2</b></td><td style="color:green"><b>2.2%</b></td></tr>
-</table>
-<b>Key Takeaways</b><br>
-<b>Account x Product Insight</b><br>
-[HOW TO CALCULATE — follow this exactly for every l9_account in KEY ITEMS:]
-Step 1: Grand total variance = 61.2Mn. 80% = 49.0Mn.
-Pick l9 rows by ABS(variance) DESC:
-- Transaction Processing = 36.0Mn (cumulative=36.0, not yet 80%)
-- Software License and Maintenance = 20.4Mn (cumulative=56.4Mn >= 49.0Mn, STOP)
+
+════════════════════════════════════════
+STEP 2: MAIN TABLE
+════════════════════════════════════════
+Show all l9_account rows sorted by ABS(variance) DESC. Grand Total last.
+All amounts 1 decimal place. Negative in red, positive in green.
+
+════════════════════════════════════════
+STEP 3: ACCOUNT x PRODUCT INSIGHT
+════════════════════════════════════════
+Grand total variance = 61.2Mn. 80% = 49.0Mn.
+Pick key l9 accounts by ABS(variance) DESC until cumulative >= 49.0Mn:
+- Transaction Processing = 36.0Mn (cumulative=36.0, not yet 49.0)
+- Software License and Maintenance = 20.4Mn (cumulative=56.4 >= 49.0, STOP)
 Key l9 accounts = [Transaction Processing, Software License and Maintenance]
 
-Step 2a: Transaction Processing parent variance = 36.0Mn. 80% threshold = 28.8Mn.
+For EACH key l9_account, show ALL l5 products (no 80% cutoff for l5 — show all that contribute):
+Sort l5 rows by ABS(variance) DESC. Show top 3 l5 products for that account.
+
+Transaction Processing parent variance = 36.0Mn:
 Filter table_txt_desc where l9_account = 'Transaction Processing and Broker Dealer Revenue'
 Group by l5_description, sum variance:
-- Treasury and Risk = 111.4Mn (ABS=111.4 >= 28.8Mn, STOP immediately — threshold exceeded by first item)
-Show: Treasury and Risk $111.4Mn ONLY. Do not show Corporate - Other Business.
+- Treasury and Risk = 111.4Mn
+- Corporate - Other Business = -66.9Mn
+Show both: "Transaction Processing and Broker Dealer Revenue: $36.0Mn variance driven by following L5 Products - Treasury and Risk $111.4Mn and Corporate - Other Business -$66.9Mn"
 
-Step 2b: Software License parent variance = 20.4Mn. 80% threshold = 16.3Mn.
-Filter table_txt_desc where l9_account = 'Software License and Maintenance'
+Software License and Maintenance parent variance = 20.4Mn:
 Group by l5_description, sum variance:
-- Treasury and Risk = 23.6Mn (ABS=23.6 >= 16.3Mn, STOP)
-Show: Treasury and Risk $23.6Mn ONLY.
+- Treasury and Risk = 23.6Mn
+- Corporate - Other Business = -2.5Mn
+Show both: "Software License and Maintenance: $20.4Mn variance driven by following L5 product - Treasury and Risk $23.6Mn and Corporate - Other Business -$2.5Mn"
 
-OUTPUT Key Takeaways text:
-Transaction Processing and Broker Dealer Revenue: $36.0Mn variance driven by Treasury and Risk $111.4Mn<br>
-Software License and Maintenance: $20.4Mn variance driven by Treasury and Risk $23.6Mn<br>
+FORMAT RULE FOR ACCOUNT x PRODUCT:
+"[l9_account]: $X.XMn variance driven by following L5 Products - [l5_A] $X.XMn and [l5_B] -$X.XMn<br>"
+Show top 3 l5 products per l9_account. Use "and" between items.
 
-[NOTE: Do NOT show Corporate - Other Business in Account x Product Insight because the 80% threshold
-was already met by the first l5 item. Only add more l5 items if first item does NOT meet 80% threshold.]
+════════════════════════════════════════
+STEP 4: CUSTOMER LEVEL INSIGHT
+════════════════════════════════════════
+From table_txt_desc, group by entity_name, sum variance across ALL l9_accounts.
+Remove ALL names matching EXCLUDED CLIENT LIST exactly.
+Sort remaining by ABS(variance) DESC.
 
+LINE 1 — Top non-attrition customers (top 4-5 by ABS variance):
+"Key customers driving variance: [EntityA] $X.XMn, [EntityB] $X.XMn, [EntityC] -$X.XMn, [EntityD] -$X.XMn<br>"
+Example: "Key customers driving variance: Droit Financial Technologies Exec Admin $34.5Mn, Wells Fargo Bank, National Association $10.8Mn, Dun & Bradstreet, Inc. $10.3Mn, Franklin Templeton Investor Services, LLC -$47.2Mn<br>"
+
+LINE 2 — Attrition risk clients (separate line):
+Find clients where attrition_description is NOT null/empty in table_txt_desc.
+Group by entity_name, sum their attrition variance.
+Show top 2-3 attrition clients as a SEPARATE line in this format:
+"[EntityA] -$X.XMn and [EntityB] - Attrition -$X.XMn show elevated attrition risk in FY26<br>"
+Example: "Credit Suisse Group AG -$13.6Mn and Mizuho - Attrition -$3.6Mn show elevated attrition risk in FY26<br>"
+
+End with: <b>Recommended focus:</b> [one CFO-level sentence]
+
+════════════════════════════════════════
+COMPLETE OUTPUT EXAMPLE:
+════════════════════════════════════════
+<b>Key Takeaways</b><br>
+<b>Account x Product Insight</b><br>
+Transaction Processing and Broker Dealer Revenue: $36.0Mn variance driven by following L5 Products - Treasury and Risk $111.4Mn and Corporate - Other Business -$66.9Mn<br>
+Software License and Maintenance: $20.4Mn variance driven by following L5 product - Treasury and Risk $23.6Mn and Corporate - Other Business -$2.5Mn<br>
 <b>Customer Level Insight</b><br>
-[HOW TO CALCULATE:]
-From table_txt_desc, group by entity_name, sum variance.
-Remove all names in EXCLUDED CLIENT LIST.
-Sort remaining by ABS(variance) DESC. Show top 5.
-All amounts 1 decimal place.
-
-Key customers driving variance: Droit Financial Technologies Exec Admin $34.5Mn, Wells Fargo Bank, National Association $10.8Mn, Dun &amp; Bradstreet, Inc. $10.3Mn, Franklin Templeton Investor Services, LLC -$47.2Mn, Credit Suisse Group AG -$13.6Mn<br>
+Key customers driving variance: Droit Financial Technologies Exec Admin $34.5Mn, Wells Fargo Bank, National Association $10.8Mn, Dun &amp; Bradstreet, Inc. $10.3Mn, Franklin Templeton Investor Services, LLC -$47.2Mn<br>
+Credit Suisse Group AG -$13.6Mn and Mizuho - Attrition -$3.6Mn show elevated attrition risk in FY26<br>
 <b>Recommended focus:</b> Sustain momentum in Treasury and Risk while urgently addressing the decline in Corporate - Other Business and monitoring attrition risk from key clients.
-<br><b>Summary</b><br>
-Total variance of $61.2Mn is driven by RUC ($49.5Mn) and Risk ($12.8Mn), partially offset by Attrition (-$1.2Mn). Treasury and Risk is the primary growth driver across all account types.
 
 ════════════════════════════════════════
 ════════════════════════════════════════
