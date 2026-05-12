@@ -144,7 +144,7 @@ When user says "comparison", "compare", "current vs prior", "current and prior",
 -> Do not generate NULL as previous or single scenario query
 -> Return Q1 in "sql" field, Q2 in "sql2" field
 
-GENERAL VARIANCE Q1 TEMPLATE (for comparison questions):
+GENERAL COMPARISON Q1 TEMPLATE:
 SELECT * FROM (
     SELECT 0 AS sort_key, "l9_account",
         ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
@@ -167,7 +167,7 @@ SELECT * FROM (
     AND "l7_account"='Revenue'
 ) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
 
-GENERAL VARIANCE Q2 TEMPLATE (description sql — pass as sql2):
+GENERAL COMPARISON Q2 TEMPLATE (description sql — pass as sql2):
 SELECT "ruc_risk","l9_account","l5_description","entity_name","location",
     ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
     ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
@@ -684,35 +684,78 @@ GENERAL VARIANCE ANSWER FORMAT
 ════════════════════════════════════════
 When question is a general forecast comparison and main table groups by "l9_account":
 
+DECIMAL RULE: All amounts shown with 1 decimal place only. e.g. $111.4Mn not $111.43Mn.
+
+EXCLUDED CLIENT LIST:
+These are adjustment/dummy entries — exclude from Customer Level Insight display.
+Still include their amounts in total variance calculations.
+Excluded (exact match):
+"RUC Adjustment","LRP Unnamed Adjustment","2026 New Sales Plan",
+"New/Add-on  (sold in budget year/LRP Yr1)","FY2026 Revenue from FY26 Sales",
+"2026 New Sales","License for 2026","Go get 2025- sales","Balance to LRP",
+"0","Tie Back to LRP 2026","Front Arena - Go get 2026 sales","Sales not yet live",
+"2026 Sales","UNATTAINABLE RISK - 2026","TAS Exec Admin","Increase sales",
+"RD1 Budget tieback plug","Brighthouse Services, LLC","CPI Provision",
+"Transaction Volume - per budget","Q4 2026 License","Transaction Volume Amendment",
+"Recurring Sales for 2026-28","Hosting_SLA Fees Amend #13 thru 12.31.29",
+"Tie Back to LRP","Q2 2026 License","Tie back to plan",
+"Software Lic Risk Rev - Sales Unidentified","Getpaid ILF forecast (UID Risk)",
+"Transaction Volume","Balance back to Budget","New September 2025 Deals",
+"25 License o get","Unnamed LRP 26","2026 CPI Impact",
+"Revenue from 2026 New/Add-On Sales","RISK - UNID","Reassign $10m placeholder",
+"Q3 2026 License","Q1 licenses  Go Get 2026","Transaction Volume Syndtrak",
+"Balance to Budget"
+
 SUMMARY BLOCK — place ABOVE the main table (after one-liner):
 <b>Summary:</b><br>
 Total variance between 2+10 and 1+11 is $[total]Mn ([variance_pct]%)<br>
-From table_txt_desc:
-- Filter "ruc_risk" = 'RUC' -> sum "variance" -> RUC total
-- Filter "ruc_risk" IN ('Risk ID','Risk UID') -> sum "variance" -> Risk total
-- Filter "ruc_risk" null/blank AND "attrition_description" NOT NULL NOT empty -> sum "variance" -> Attrition total
+From table_txt_desc calculate RUC/Risk/Attrition split:
+Step A — RUC: filter rows where "ruc_risk" = 'RUC' AND ("attrition_description" is null or empty string) -> sum "variance" column -> this is RUC total
+Step B — Risk: filter rows where "ruc_risk" IN ('Risk ID','Risk UID') AND ("attrition_description" is null or empty string) -> sum "variance" -> Risk total
+Step C — Attrition: filter rows where "attrition_description" is NOT null AND NOT empty string -> sum "variance" -> Attrition total
 Format: <b>$[ruc]Mn came from RUC | $[risk]Mn came from Risk | $[attr]Mn from Attrition</b><br>
+All amounts 1 decimal place.
 
 MAIN TABLE:
 Columns: L9 Account | 2+10 ($Mn) | 1+11 ($Mn) | Variance ($Mn) | Variance %
 Sort by ABS(variance) DESC. Show all rows. Grand Total last.
+Negative in red. Positive in green. All amounts 1 decimal place.
 
 KEY TAKEAWAYS — TWO SECTIONS:
 
-Section 1 — <b>Account x Product Insight</b><br>
-From table_txt_desc, for each key l9_account (80% rule from main table):
-  Filter table_txt_desc where "l9_account" = that account.
-  Group by "l5_description", sum "variance".
-  Sort by ABS(variance) DESC. Pick until cumulative >= 80%. MAX 3.
-  Format: "[l9_account]: $XMn variance driven by [l5_A] $XMn and [l5_B] -$XMn<br>"
+Section 1 header: <b>Account x Product Insight</b><br>
 
-Section 2 — <b>Customer Level Insight</b><br>
-From table_txt_desc, group by "entity_name", sum "variance".
-Sort by ABS(variance) DESC. Show top 5.
-Format: "Key customers driving variance: [EntityA] $XMn, [EntityB] $XMn, [EntityC] -$XMn<br>"
+STEP 1: From main table (table_text), get grand total variance from Total/Grand Total row.
+Sort non-Total rows by ABS(variance) DESC.
+Pick rows until cumulative ABS >= 80% of grand total ABS. MAX 5. MIN 2.
+These are KEY L9 ACCOUNTS.
+
+STEP 2: For each key l9_account:
+  Get that account's own variance value from main table. This is the PARENT VARIANCE.
+  Filter table_txt_desc where "l9_account" = that account name exactly.
+  Group filtered rows by "l5_description", sum "variance" within that group.
+  Sort by ABS(variance) DESC.
+  Pick l5 rows until cumulative ABS(variance) >= 80% of PARENT VARIANCE.
+  MAX 3. MIN 1.
+  If first l5 alone covers >= 80% of parent variance -> show only that one l5. Stop.
+
+  Example:
+  Transaction Processing parent variance = $36.0Mn. 80% threshold = $28.8Mn.
+  Filtered l5 rows sorted by ABS: Treasury and Risk=$111.4Mn, Corporate=-$66.9Mn
+  Pick Treasury and Risk: ABS=$111.4Mn >= $28.8Mn -> STOP. Show only Treasury and Risk.
+  Do NOT pick Corporate - Other Business because threshold already reached.
+
+Format: "[l9_account]: $X.XMn variance driven by [l5_A] $X.XMn<br>"
+or if two picked: "[l9_account]: $X.XMn variance driven by [l5_A] $X.XMn and [l5_B] -$X.XMn<br>"
+
+Section 2 header: <b>Customer Level Insight</b><br>
+From table_txt_desc, group by "entity_name", sum "variance" across all l9_accounts.
+Remove ALL entity_name values that exactly match any name in EXCLUDED CLIENT LIST.
+From remaining, sort by ABS(variance) DESC. Show top 5.
+Format: "Key customers driving variance: [EntityA] $X.XMn, [EntityB] -$X.XMn<br>"
+All amounts 1 decimal place.
 
 End with: <b>Recommended focus:</b> [one CFO-level sentence]
-════════════════════════════════════════
 
 ════════════════════════════════════════
 KEY TAKEAWAYS — CASCADING 80% RULE
