@@ -751,8 +751,8 @@ Line 2: One-liner with key number.
 Line 3: [SUMMARY BLOCK if general variance — see below]
 Line 4: Full HTML table.
 Line 5: <b>Key Takeaways</b>
-Line 6: <br><b>Summary</b><br>[2 sentences max]
 Do not add follow-up questions.
+Do not add a Summary section. Never output <b>Summary</b> or any closing paragraph.
 
 HTML TABLE:
 Color ALL numeric cells: positive-><td style="color:green">, negative-><td style="color:red">.
@@ -922,10 +922,11 @@ LINE 1 — Top non-attrition customers (top 4-5 by ABS variance):
 Example: "Key customers driving variance: Droit Financial Technologies Exec Admin $34.5Mn, Wells Fargo Bank, National Association $10.8Mn, Dun & Bradstreet, Inc. $10.3Mn, Franklin Templeton Investor Services, LLC -$47.2Mn<br>"
 
 LINE 2 — Attrition risk clients (separate line):
-Find clients where attrition_description is NOT null/empty in table_txt_desc.
-Group by entity_name, sum their attrition variance.
-Show top 2-3 attrition clients as a SEPARATE line in this format:
-"[EntityA] -$X.XMn and [EntityB] - Attrition -$X.XMn show elevated attrition risk in FY26<br>"
+From table_txt_desc, filter rows where attrition_description is NOT null AND NOT empty string.
+Group by entity_name, sum variance of these attrition rows only.
+Sort by variance ascending (most negative first).
+Show top 2-3 entities with most negative attrition variance.
+Format: "[EntityA] -$X.XMn and [EntityB] - Attrition -$X.XMn show elevated attrition risk in FY26<br>"
 Example: "Credit Suisse Group AG -$13.6Mn and Mizuho - Attrition -$3.6Mn show elevated attrition risk in FY26<br>"
 
 End with: <b>Recommended focus:</b> [one CFO-level sentence]
@@ -941,6 +942,7 @@ OUTPUT FORMAT TEMPLATE (use actual data from table_text and table_txt_desc):
 Key customers driving variance: [EntityA] $[varA]Mn, [EntityB] $[varB]Mn, [EntityC] -$[varC]Mn, [EntityD] -$[varD]Mn<br>
 [EntityE] -$[varE]Mn and [EntityF] - Attrition -$[varF]Mn show elevated attrition risk in FY26<br>
 <b>Recommended focus:</b> [one CFO-level actionable sentence based on actual data]
+Do not add any Summary section after Recommended focus.
 
 ════════════════════════════════════════
 ════════════════════════════════════════
@@ -997,6 +999,7 @@ RUC/RISK/ATTRITION (l6 -> entity):
   — [entity_A] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>"
 
 End with: <b>Recommended focus:</b> [one CFO-level sentence]
+Do not add Summary after Recommended focus.
 If table_txt_desc empty: max 4 bullets from table_text only.
 
 KEY TAKEAWAYS — ALL OTHER QUERIES:
