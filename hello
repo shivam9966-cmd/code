@@ -963,17 +963,59 @@ From table_txt_desc, group by entity_name, sum variance across ALL l9_accounts.
 Remove ALL names matching EXCLUDED CLIENT LIST exactly.
 Sort remaining by ABS(variance) DESC.
 
-LINE 1 — Top non-attrition customers (top 4-5 by ABS variance):
-"Key customers driving variance: [EntityA] $X.XMn, [EntityB] $X.XMn, [EntityC] -$X.XMn, [EntityD] -$X.XMn<br>"
-Example: "Key customers driving variance: Droit Financial Technologies Exec Admin $34.5Mn, Wells Fargo Bank, National Association $10.8Mn, Dun & Bradstreet, Inc. $10.3Mn, Franklin Templeton Investor Services, LLC -$47.2Mn<br>"
+════════════════════════════════════════
+CUSTOMER LEVEL INSIGHT — STRICT RULES
+════════════════════════════════════════
 
-LINE 2 — Attrition risk clients (separate line):
-From table_txt_desc, filter rows where attrition_description is NOT null AND NOT empty string.
-Group by entity_name, sum variance of these attrition rows only.
-Sort by variance ascending (most negative first).
-Show top 2-3 entities with most negative attrition variance.
-Format: "[EntityA] -$X.XMn and [EntityB] - Attrition -$X.XMn show elevated attrition risk in FY26<br>"
-Example: "Credit Suisse Group AG -$13.6Mn and Mizuho - Attrition -$3.6Mn show elevated attrition risk in FY26<br>"
+EXCLUDED CLIENT LIST — these names are adjustment/dummy entries.
+Remove every name below from ALL customer outputs.
+Check every entity_name against this list before showing it.
+If the name matches exactly → skip it. No exceptions.
+
+EXCLUDED NAMES (exact match, case-sensitive):
+"RUC Adjustment","LRP Unnamed Adjustment","2026 New Sales Plan",
+"New/Add-on  (sold in budget year/LRP Yr1)","FY2026 Revenue from FY26 Sales",
+"2026 New Sales","License for 2026","Go get 2025- sales","Balance to LRP",
+"0","Tie Back to LRP 2026","Front Arena - Go get 2026 sales","Sales not yet live",
+"2026 Sales","UNATTAINABLE RISK - 2026","TAS Exec Admin","Increase sales",
+"RD1 Budget tieback plug","Brighthouse Services, LLC","CPI Provision",
+"Transaction Volume - per budget","Q4 2026 License","Transaction Volume Amendment",
+"Recurring Sales for 2026-28","Hosting_SLA Fees Amend #13 thru 12.31.29",
+"Tie Back to LRP","Q2 2026 License","Tie back to plan",
+"Software Lic Risk Rev - Sales Unidentified","Getpaid ILF forecast (UID Risk)",
+"Transaction Volume","Balance back to Budget","New September 2025 Deals",
+"25 License o get","Unnamed LRP 26","2026 CPI Impact",
+"Revenue from 2026 New/Add-On Sales","RISK - UNID","Reassign $10m placeholder",
+"Q3 2026 License","Q1 licenses  Go Get 2026","Transaction Volume Syndtrak",
+"Balance to Budget"
+
+LINE 1 — Top clients by variance (STRICTLY excluding above list):
+Step 1: From table_txt_desc, group by "entity_name", sum "variance" across all rows.
+Step 2: Remove EVERY name in the EXCLUDED NAMES list above. Check each name one by one.
+Step 3: Sort remaining by ABS(variance) DESC.
+Step 4: Show top 4-5 clients.
+All amounts 1 decimal place.
+Format: "Key customers driving variance: [EntityA] $X.XMn, [EntityB] -$X.XMn, [EntityC] $X.XMn, [EntityD] -$X.XMn<br>"
+
+LINE 2 — Risk client breakdown (separate line):
+Step 1: From table_txt_desc, filter rows where "ruc_risk" IN ('Risk ID','Risk UID') AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+Step 2: Group by "entity_name", sum "variance" of filtered rows.
+Step 3: Remove EVERY name in the EXCLUDED NAMES list above.
+Step 4: Sort by ABS(variance) DESC. Pick top 3 clients.
+Step 5: For each of those 3 clients:
+  - Filter table_txt_desc where entity_name = that client AND ruc_risk IN ('Risk ID','Risk UID') AND attrition empty
+  - Group by "l7_description", sum "variance"
+  - Sort by ABS(variance) DESC. Show top 2 l7_description per client.
+Format each client as: "[ClientA] $X.XMn ([l7_A] $X.XMn, [l7_B] -$X.XMn)"
+Join all 3 clients with " | "
+Full line: "Risk clients: [ClientA] $X.XMn ([l7_A] $X.XMn, [l7_B] -$X.XMn) | [ClientB] -$X.XMn ([l7_C] -$X.XMn) | [ClientC] -$X.XMn ([l7_D] -$X.XMn)<br>"
+Only show this line if matching rows exist in table_txt_desc.
+
+VERIFICATION STEP (do this before writing output):
+Go through every entity_name you plan to show in LINE 1 and LINE 2.
+Check each one against EXCLUDED NAMES list.
+If it matches any excluded name → remove it and pick the next client.
+Do not show any excluded name under any circumstance.
 
 End with: <b>Recommended focus:</b> [one CFO-level sentence]
 
