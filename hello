@@ -293,15 +293,51 @@ Keep all existing filters. Add specific filter. GROUP BY requested level. Add LI
 VARIANCE QUERY STRUCTURE — TWO QUERIES:
 For ALL variance questions, generate TWO queries.
 
-DETECT TYPE FIRST:
-"customer","client","entity"              -> CUSTOMER  -> Q1 GROUP BY "l7_description"
-"ruc","organic"                          -> RUC       -> Q1 GROUP BY "l6_description"
-"risk"                                   -> RISK      -> Q1 GROUP BY "l6_description"
-"attrition"                              -> ATTRITION -> Q1 GROUP BY "l6_description"
-"account","recurring","non-recurring"    -> ACCOUNT   -> Q1 GROUP BY "l6_description"
-"l5" product stated                      -> PRODUCT   -> Q1 GROUP BY "l6_description"
-other product level stated               -> PRODUCT   -> skip Q1, Q2 only
-none of above + "variance"              -> GENERAL   -> Q1 GROUP BY "l5_description"
+QUERY ROUTING — TWO PARTS. Apply both.
+
+PART A — QUERY SUBJECT TYPE (determines answer table):
+Condition 1 — Specific Product (user names a specific product e.g. "Treasury and Risk", "Front Arena"):
+  -> Q1 GROUP BY "l9_account" (L7 account breakdown) with product filter
+  -> State product total first in response
+
+Condition 2 — Top N Products (user asks "top N products"):
+  -> If product level stated -> Q1 GROUP BY that level
+  -> If product level not stated -> Q1 GROUP BY "l6_description" (default)
+
+Condition 3 — Specific Client (user names a specific client):
+  -> Q1 GROUP BY "l7_description" (L7 product) WHERE entity_name = that client
+
+Condition 4 — Top N Clients (user asks "top N clients"):
+  -> Q1 GROUP BY "entity_name"
+
+Condition 5 — Account only (no product or client filter):
+  -> Q1 GROUP BY "l9_account" (L7 account)
+
+PART B — QUESTION TYPE OVERLAY (determines source table and key takeaway order):
+Q-Type RUC ("ruc", "revenue under contract"):
+  -> Q1 GROUP BY "l6_description" WHERE "ruc_risk"='RUC' AND attrition IS NULL
+  -> Key takeaways order: 1. RUC breakdown 2. l6_description 3. entity_name
+
+Q-Type Risk ("risk", "risk id", "risk uid"):
+  -> Q1 GROUP BY "ruc_risk" (showing Risk ID vs Risk UID split)
+  -> Key takeaways order: 1. Risk ID vs UID 2. l6_description 3. entity_name
+
+Q-Type Attrition ("attrition"):
+  -> Q1 GROUP BY "attrition_description"
+  -> Key takeaways order: 1. attrition_description 2. l6_description 3. entity_name
+
+Q-Type Variance/Comparison (default when no Part B keyword):
+  -> Apply Part A conditions above
+
+COMBINED ROUTING TABLE:
+"customer","client","entity" + no Part B      -> Condition 3 or 4 from Part A
+"ruc","organic"                               -> Part B Q-Type RUC -> GROUP BY "l6_description"
+"risk"                                        -> Part B Q-Type Risk -> GROUP BY "ruc_risk"
+"attrition"                                   -> Part B Q-Type Attrition -> GROUP BY "attrition_description"
+"account","recurring","non-recurring"         -> Condition 5 Part A -> GROUP BY "l9_account"
+specific product name in colvalue_mapping     -> Condition 1 Part A -> GROUP BY "l9_account" with product filter
+"top N products" / no specific product        -> Condition 2 Part A -> GROUP BY "l6_description"
+"comparison"/"variance" with no other filter  -> Condition 5 Part A -> GROUP BY "l9_account"
 
 QUERY 1 template (LIMIT 11):
 SELECT * FROM (
@@ -340,27 +376,39 @@ TOP N CUSTOMER — TWO QUERIES:
 QUERY 1: GROUP BY "entity_name", LIMIT N+1 (with Total)
 QUERY 2: GROUP BY "entity_name","l9_account", same filters, NO LIMIT
 
-MULTI-QUERY GENERATION:
-CUSTOMER (specific client):
+MULTI-QUERY GENERATION (aligned with PART A + PART B routing):
+
+Condition 1 — Specific Product:
+Q1: GROUP BY "l9_account" WHERE product filter (l6/l7/l8_description = value from colvalue_mapping)
+Q2: GROUP BY "l9_account","entity_name" same filters
+
+Condition 2 — Top N Products:
+Q1: GROUP BY "l6_description" (or stated level) LIMIT N+1
+Q2: GROUP BY "l6_description","l9_account" same filters NO LIMIT
+
+Condition 3 — Specific Client:
 Q1: GROUP BY "l7_description" WHERE "entity_name"='[client]'
 Q2: GROUP BY "l7_description","l9_account" same filters
 
-TOP N CUSTOMERS:
+Condition 4 — Top N Clients:
 Q1: GROUP BY "entity_name" LIMIT N+1
-Q2: GROUP BY "entity_name","l7_description" same filters NO LIMIT
-Q3: GROUP BY "entity_name","l7_description","l9_account" same filters NO LIMIT
+Q2: GROUP BY "entity_name","l7_description","l9_account" same filters NO LIMIT
 
-GENERAL VARIANCE (plain variance, no comparison keyword):
-Q1: GROUP BY "l5_description" variance comparison
-Q2: GROUP BY "l5_description","l9_account" same filters
+Condition 5 — Account only:
+Q1: GROUP BY "l9_account"
+Q2: GROUP BY "l9_account","l6_description","entity_name" same filters
 
-RUC/RISK/ATTRITION/ACCOUNT:
-Q1: GROUP BY "l6_description" with relevant filters
+Part B — RUC:
+Q1: GROUP BY "l6_description" WHERE "ruc_risk"='RUC' AND attrition IS NULL
 Q2: GROUP BY "l6_description","entity_name" same filters
 
-PRODUCT + L5:
-Q1: GROUP BY "l6_description"
-Q2: GROUP BY "l6_description","l9_account"
+Part B — Risk:
+Q1: GROUP BY "ruc_risk" WHERE "ruc_risk" IN ('Risk ID','Risk UID') AND attrition IS NULL
+Q2: GROUP BY "ruc_risk","l6_description","entity_name" same filters
+
+Part B — Attrition:
+Q1: GROUP BY "attrition_description" WHERE attrition IS NOT NULL AND NOT empty
+Q2: GROUP BY "attrition_description","l6_description","entity_name" same filters
 
 CUSTOMER QUESTION — MULTI-QUERY:
 Q1: GROUP BY "l7_description" WHERE "entity_name" = '[client]'
@@ -950,11 +998,31 @@ KEY TAKEAWAYS — CASCADING 80% RULE
 ════════════════════════════════════════
 This rule applies to ALL other question types.
 
-QUESTION TYPE MAPPING:
-GENERAL VARIANCE   -> Level1=l5_description | Level2=l9_account per l5
-SPECIFIC CLIENT    -> Level1=l7_description | Level2=l9_account per l7
-TOP N CLIENTS      -> Level1=entity_name    | Level2=l7_description per client | Level3=l9_account per l7
-RUC/RISK/ATTRITION/ACCOUNT -> Level1=l6_description | Level2=entity_name per l6
+QUESTION TYPE MAPPING (Part A + Part B):
+
+Part A Condition 1 — Specific Product:
+  Level1=l9_account | Level2=entity_name per l9_account
+
+Part A Condition 2 — Top N Products:
+  Level1=l6_description | Level2=l9_account per l6 | Level3=entity_name per l9
+
+Part A Condition 3 — Specific Client:
+  Level1=l7_description | Level2=l9_account per l7
+
+Part A Condition 4 — Top N Clients:
+  Level1=entity_name | Level2=l7_description per client | Level3=l9_account per l7
+
+Part A Condition 5 — Account only:
+  Level1=l9_account | Level2=l6_description per l9 | Level3=entity_name per l6
+
+Part B Q-Type RUC:
+  Level1=l6_description | Level2=entity_name per l6
+
+Part B Q-Type Risk:
+  Level1=ruc_risk (Risk ID vs Risk UID) | Level2=l6_description per ruc_risk | Level3=entity_name per l6
+
+Part B Q-Type Attrition:
+  Level1=attrition_description | Level2=l6_description per attrition | Level3=entity_name per l6
 
 STEP 1 — Pick key items from table_text:
 Take Total row value as grand total.
@@ -980,25 +1048,45 @@ STEP 3 — TOP N CLIENTS only: get l9 per l7 per client:
 Filter where FIRST COL=client AND SECOND COL=l7.
 Pick until cumulative >= 80%. MAX 5. MIN 2.
 
-STEP 4 — Write bullets:
+STEP 4 — Write bullets per question type:
 
-GENERAL VARIANCE (l5 -> l9):
-"• <b>[l5]</b> (<span style="color:green/red"><b>+/-$XM</b></span>):<br>
-  — [l9_A] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>"
+Part A Condition 1 — Specific Product (l9_account -> entity_name):
+"• <b>[l9_account]</b> (<span style="color:green/red"><b>+/-$X.XMn</b></span>):<br>
+  — [entity_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>"
 
-SPECIFIC CLIENT (l7 -> l9):
-"• <b>[l7]</b> ($XM):<br>
-  — [l9_A] ($XM)<br>"
+Part A Condition 2 — Top N Products (l6_description -> l9_account -> entity_name):
+"• <b>[l6_description]</b> (<span style="color:green/red"><b>+/-$X.XMn</b></span>):<br>
+  — [l9_account_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>
+  — [entity_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>"
 
-TOP N CLIENTS (entity -> l7 -> l9):
-"• <b>[entity]</b> ($XM):<br>
-  — <b>[l7_A]</b> ($XM): [l9_X] ($XM), [l9_Y] ($XM)<br>"
+Part A Condition 3 — Specific Client (l7_description -> l9_account):
+"• <b>[l7_description]</b> ($X.XMn):<br>
+  — [l9_account_A] ($X.XMn)<br>"
 
-RUC/RISK/ATTRITION (l6 -> entity):
-"• <b>[l6]</b> (<span style="color:green/red"><b>+/-$XM</b></span>):<br>
-  — [entity_A] (<span style="color:green/red"><b>+/-$XM</b></span>)<br>"
+Part A Condition 4 — Top N Clients (entity_name -> l7_description -> l9_account):
+"• <b>[entity_name]</b> ($X.XMn):<br>
+  — <b>[l7_A]</b> ($X.XMn): [l9_X] ($X.XMn), [l9_Y] ($X.XMn)<br>"
 
-End with: <b>Recommended focus:</b> [one CFO-level sentence]
+Part A Condition 5 — Account only (l9_account -> l6_description -> entity_name):
+"• <b>[l9_account]</b> (<span style="color:green/red"><b>+/-$X.XMn</b></span>):<br>
+  — [l6_description_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>
+  — [entity_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>"
+
+Part B RUC (l6_description -> entity_name):
+"• <b>[l6_description]</b> (<span style="color:green/red"><b>+/-$X.XMn</b></span>):<br>
+  — [entity_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>"
+
+Part B Risk (ruc_risk -> l6_description -> entity_name):
+"• <b>[Risk ID / Risk UID]</b> (<span style="color:green/red"><b>+/-$X.XMn</b></span>):<br>
+  — [l6_description_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>
+  — [entity_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>"
+
+Part B Attrition (attrition_description -> l6_description -> entity_name):
+"• <b>[attrition_description]</b> (<span style="color:green/red"><b>+/-$X.XMn</b></span>):<br>
+  — [l6_description_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>
+  — [entity_A] (<span style="color:green/red"><b>+/-$X.XMn</b></span>)<br>"
+
+All amounts 1 decimal place. End with: <b>Recommended focus:</b> [one CFO-level sentence]
 Do not add Summary after Recommended focus.
 If table_txt_desc empty: max 4 bullets from table_text only.
 
@@ -1083,43 +1171,48 @@ Your task:
 7. Wrap full SELECT in outer subquery so ORDER BY can reference aliases.
 
 DRILL DOWN MAPPING:
-high_level_sql GROUP BY "l9_account" (general comparison question)
--> description_sql GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
--> amount: both version amounts + variance
--> keep same Year and l7_account filters
+DRILL DOWN MAPPING (aligned with Part A + Part B routing):
 
-high_level_sql GROUP BY "l5_description"
--> description_sql GROUP BY "l5_description","l9_account","location"
+Condition 1 — Specific Product (high_level_sql GROUP BY "l9_account" with product filter):
+-> description_sql GROUP BY "ruc_risk","attrition_description","l9_account","entity_name","location"
 -> amount: both version amounts + variance
+-> copy same product filter and Year filter exactly
 
-high_level_sql GROUP BY "l6_description"
--> description_sql GROUP BY "l6_description","entity_name","location"
+Condition 2 — Top N Products (high_level_sql GROUP BY "l6_description"):
+-> description_sql GROUP BY "l6_description","l9_account","entity_name","location"
 -> amount: both version amounts + variance or revenue_M
 
-high_level_sql GROUP BY "l7_description" with entity_name filter
+Condition 3 — Specific Client (high_level_sql GROUP BY "l7_description" with entity_name filter):
 -> description_sql GROUP BY "l7_description","l9_account","location" with same entity_name filter
 -> amount: revenue_M
 
-high_level_sql GROUP BY "l7_description" without entity_name filter
--> description_sql GROUP BY "l7_description","l9_account","location"
--> amount: both version amounts + variance or revenue_M
-
-high_level_sql GROUP BY "entity_name" (top N clients)
+Condition 4 — Top N Clients (high_level_sql GROUP BY "entity_name"):
 -> description_sql GROUP BY "entity_name","l7_description","l9_account","location"
 -> amount: revenue_M
 
-high_level_sql GROUP BY "attrition_description","ruc_risk"
+Condition 5 — Account only (high_level_sql GROUP BY "l9_account" no product/client filter):
+-> description_sql GROUP BY "ruc_risk","attrition_description","l9_account","l5_description","entity_name","location"
+-> amount: both version amounts + variance
+
+Part B RUC (high_level_sql GROUP BY "l6_description" with ruc_risk='RUC' filter):
 -> description_sql GROUP BY "l6_description","entity_name","location"
--> keep same version, Year, l8_account filters
--> amount: revenue_M
+-> amount: both version amounts + variance
+
+Part B Risk (high_level_sql GROUP BY "ruc_risk"):
+-> description_sql GROUP BY "ruc_risk","l6_description","entity_name","location"
+-> amount: both version amounts + variance
+
+Part B Attrition (high_level_sql GROUP BY "attrition_description"):
+-> description_sql GROUP BY "attrition_description","l6_description","entity_name","location"
+-> amount: both version amounts + variance
 
 high_level_sql GROUP BY "l8_description"
 -> description_sql GROUP BY "l8_description","l9_account","location"
 
-high_level_sql GROUP BY "quarter" with entity_name filter (client by quarter)
+high_level_sql GROUP BY "quarter" with entity_name filter (client by quarter):
 -> description_sql GROUP BY "l7_description","l9_account","location" with same entity_name filter
--> Copy entity_name filter EXACTLY as-is from high_level_sql — do not truncate or modify the name
--> Copy "l7_account" filter EXACTLY as-is from high_level_sql
+-> Copy entity_name filter EXACTLY as-is — do not truncate or modify
+-> Copy all other filters EXACTLY as-is
 -> amount: both version amounts + variance
 
 ENTITY NAME COPY RULE:
