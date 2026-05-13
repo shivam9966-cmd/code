@@ -168,15 +168,18 @@ SELECT * FROM (
 ) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
 
 GENERAL COMPARISON Q2 TEMPLATE (description sql — pass as sql2):
-SELECT "ruc_risk","l9_account","l5_description","entity_name","location",
-    ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
-    ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
-    ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
-FROM finance.forecast_data_new
-WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
-AND "l7_account"='Revenue'
-GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
-HAVING SUM(COALESCE("amount",0))<>0
+SELECT * FROM (
+    SELECT "ruc_risk","attrition_description","l9_account","l5_description","entity_name","location",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
+        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l7_account"='Revenue'
+    GROUP BY "ruc_risk","attrition_description","l9_account","l5_description","entity_name","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
 ORDER BY "l9_account", ABS("variance") DESC
 
 GENERAL VARIANCE DETECTION:
@@ -556,6 +559,97 @@ row_type = 'summary' for quarterly rows, 'customer' for entity rows.
 DRILLDOWN FOLLOW-UP SQL RULE:
 Add specific filter to WHERE. GROUP BY requested level. Use CASE WHEN for version comparison. Add LIMIT 10.
 
+=====================================================
+FOLLOW-UP FEW-SHOT EXAMPLES
+=====================================================
+
+--------------------------------------------------------
+Example 1 - PRODUCT DRILL DOWN (which L7 products driving variance for a specific l9_account)
+--------------------------------------------------------
+Previous question: Give me comparison between current and prior forecast for Capital Markets
+Current question: Which L7 products are driving variance for Transaction Processing
+
+Detected type: ACCOUNT DRILL DOWN
+-> GROUP BY "l7_description" WHERE "l9_account" = 'Transaction Processing and Broker Dealer Revenue'
+-> Keep same Year and version filters from previous SQL
+
+sql:
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l7_description",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l9_account"='Transaction Processing and Broker Dealer Revenue'
+    AND "version" IN ('2+10','1+11')
+    GROUP BY "l7_description"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text,
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2)
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l9_account"='Transaction Processing and Broker Dealer Revenue'
+    AND "version" IN ('2+10','1+11')
+) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+
+--------------------------------------------------------
+Example 2 - CLIENT DRILL DOWN BY QUARTER
+--------------------------------------------------------
+Previous question: Give me comparison between current and prior forecast for Capital Markets
+Current question: Show the variance of Droit Financial Technologies Exec Admin by quarters
+
+Detected type: SPECIFIC CLIENT BY QUARTER
+-> GROUP BY quarter WHERE "entity_name" = 'Droit Financial Technologies Exec Admin'
+-> Derive quarter using CASE WHEN on "month". Do not SELECT "month".
+-> Keep same Year and version filters. No LIMIT for quarterly.
+
+sql:
+SELECT * FROM (
+    SELECT 0 AS sort_key,
+        CASE WHEN "month" IN ('Jan','Feb','Mar') THEN 'Q1'
+             WHEN "month" IN ('Apr','May','Jun') THEN 'Q2'
+             WHEN "month" IN ('Jul','Aug','Sep') THEN 'Q3'
+             WHEN "month" IN ('Oct','Nov','Dec') THEN 'Q4' END AS "quarter",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "entity_name"='Droit Financial Technologies Exec Admin'
+    AND "version" IN ('2+10','1+11')
+    GROUP BY CASE WHEN "month" IN ('Jan','Feb','Mar') THEN 'Q1'
+                  WHEN "month" IN ('Apr','May','Jun') THEN 'Q2'
+                  WHEN "month" IN ('Jul','Aug','Sep') THEN 'Q3'
+                  WHEN "month" IN ('Oct','Nov','Dec') THEN 'Q4' END
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text,
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2)
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "entity_name"='Droit Financial Technologies Exec Admin'
+    AND "version" IN ('2+10','1+11')
+) t ORDER BY sort_key ASC,
+    CASE "quarter" WHEN 'Q1' THEN 1 WHEN 'Q2' THEN 2 WHEN 'Q3' THEN 3 WHEN 'Q4' THEN 4 ELSE 5 END
+
+DETECTION RULES FOR FOLLOW-UP:
+"which [product level] products driving [account]" -> GROUP BY that product level WHERE that l9_account filter
+"variance of [client] by quarter" -> GROUP BY quarter WHERE entity_name = that client
+"breakdown of [client] by [product]" -> GROUP BY that product level WHERE entity_name = that client
+"[client] by [account]" -> GROUP BY l9_account WHERE entity_name = that client
+Keep ALL version and Year filters from previous SQL.
+Do not use CTEs or WITH clauses. Use simple CASE WHEN pattern only.
+
 Return ONLY JSON: {"sql": "SELECT ..."}
 Table: finance.forecast_data_new only.
 Totals row via UNION ALL. LIMIT at very end only.
@@ -800,22 +894,16 @@ Key l9 accounts = [Transaction Processing, Software License and Maintenance]
 For EACH key l9_account, show ALL l5 products (no 80% cutoff for l5 — show all that contribute):
 Sort l5 rows by ABS(variance) DESC. Show top 3 l5 products for that account.
 
-Transaction Processing parent variance = 36.0Mn:
-Filter table_txt_desc where l9_account = 'Transaction Processing and Broker Dealer Revenue'
-Group by l5_description, sum variance:
-- Treasury and Risk = 111.4Mn
-- Corporate - Other Business = -66.9Mn
-Show both: "Transaction Processing and Broker Dealer Revenue: $36.0Mn variance driven by following L5 Products - Treasury and Risk $111.4Mn and Corporate - Other Business -$66.9Mn"
-
-Software License and Maintenance parent variance = 20.4Mn:
-Group by l5_description, sum variance:
-- Treasury and Risk = 23.6Mn
-- Corporate - Other Business = -2.5Mn
-Show both: "Software License and Maintenance: $20.4Mn variance driven by following L5 product - Treasury and Risk $23.6Mn and Corporate - Other Business -$2.5Mn"
+For EACH key l9_account:
+Filter table_txt_desc where l9_account = that account name exactly.
+Group filtered rows by l5_description, sum variance within that group.
+Sort l5 rows by ABS(variance) DESC. Show top 3 l5 products.
+Format each line as:
+"[l9_account]: $[parent_variance]Mn variance driven by following L5 Products - [l5_A] $[l5_A_var]Mn and [l5_B] -$[l5_B_var]Mn"
 
 FORMAT RULE FOR ACCOUNT x PRODUCT:
 "[l9_account]: $X.XMn variance driven by following L5 Products - [l5_A] $X.XMn and [l5_B] -$X.XMn<br>"
-Show top 3 l5 products per l9_account. Use "and" between items.
+Show top 3 l5 products per l9_account. Use "and" between items. All amounts 1 decimal place.
 
 ════════════════════════════════════════
 STEP 4: CUSTOMER LEVEL INSIGHT
@@ -838,16 +926,16 @@ Example: "Credit Suisse Group AG -$13.6Mn and Mizuho - Attrition -$3.6Mn show el
 End with: <b>Recommended focus:</b> [one CFO-level sentence]
 
 ════════════════════════════════════════
-COMPLETE OUTPUT EXAMPLE:
+OUTPUT FORMAT TEMPLATE (use actual data from table_text and table_txt_desc):
 ════════════════════════════════════════
 <b>Key Takeaways</b><br>
 <b>Account x Product Insight</b><br>
-Transaction Processing and Broker Dealer Revenue: $36.0Mn variance driven by following L5 Products - Treasury and Risk $111.4Mn and Corporate - Other Business -$66.9Mn<br>
-Software License and Maintenance: $20.4Mn variance driven by following L5 product - Treasury and Risk $23.6Mn and Corporate - Other Business -$2.5Mn<br>
+[l9_account_1]: $[parent_variance]Mn variance driven by following L5 Products - [l5_A] $[l5_A_variance]Mn and [l5_B] -$[l5_B_variance]Mn<br>
+[l9_account_2]: $[parent_variance]Mn variance driven by following L5 product - [l5_A] $[l5_A_variance]Mn<br>
 <b>Customer Level Insight</b><br>
-Key customers driving variance: Droit Financial Technologies Exec Admin $34.5Mn, Wells Fargo Bank, National Association $10.8Mn, Dun &amp; Bradstreet, Inc. $10.3Mn, Franklin Templeton Investor Services, LLC -$47.2Mn<br>
-Credit Suisse Group AG -$13.6Mn and Mizuho - Attrition -$3.6Mn show elevated attrition risk in FY26<br>
-<b>Recommended focus:</b> Sustain momentum in Treasury and Risk while urgently addressing the decline in Corporate - Other Business and monitoring attrition risk from key clients.
+Key customers driving variance: [EntityA] $[varA]Mn, [EntityB] $[varB]Mn, [EntityC] -$[varC]Mn, [EntityD] -$[varD]Mn<br>
+[EntityE] -$[varE]Mn and [EntityF] - Attrition -$[varF]Mn show elevated attrition risk in FY26<br>
+<b>Recommended focus:</b> [one CFO-level actionable sentence based on actual data]
 
 ════════════════════════════════════════
 ════════════════════════════════════════
@@ -1054,9 +1142,32 @@ high_level_sql GROUP BY: "l9_account"
 high_level_sql versions: '2+10' vs '1+11'
 high_level_sql filters: "Year" = MAX(Year), "l7_account" = 'Revenue'
 
+Primary SQL (high_level_sql):
+SELECT * FROM (
+    SELECT 0 AS sort_key, "l9_account",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2) AS "variance_pct"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l7_account"='Revenue'
+    GROUP BY "l9_account"
+    HAVING SUM(COALESCE("amount",0))<>0
+    UNION ALL
+    SELECT 1 AS sort_key, 'Total'::text,
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2),
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/NULLIF(SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END),0)*100)::numeric,2)
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "l7_account"='Revenue'
+) t ORDER BY sort_key ASC, ABS("variance") DESC LIMIT 11
+
 description_sql:
 SELECT * FROM (
-    SELECT "ruc_risk","l9_account","l5_description","entity_name","location",
+    SELECT "ruc_risk","attrition_description","l9_account","l5_description","entity_name","location",
         ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
         ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
         ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
@@ -1064,7 +1175,7 @@ SELECT * FROM (
     FROM finance.forecast_data_new
     WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
     AND "l7_account"='Revenue'
-    GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
+    GROUP BY "ruc_risk","attrition_description","l9_account","l5_description","entity_name","location"
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l9_account", ABS("variance") DESC
