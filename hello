@@ -681,7 +681,12 @@ Rules:
 - MONTH TYPE FIX: "month" IN (1,2,3) -> "month" IN ('Jan','Feb','Mar').
 - DUPLICATE SQL FIX: Keep only first if two identical SELECTs back to back.
 - ENTITY NAME FIX: "entity_name" is client column. Do not move to product columns.
-- CAST ROUNDING FIX: ROUND(CAST(x AS numeric), 2) -> ROUND((x)::numeric, 2).
+- CAST ROUNDING FIX:
+Replace ALL ROUND(CAST(expr AS numeric), 2) with ROUND((expr)::numeric, 2) everywhere in the SQL.
+Check every ROUND() call including inside UNION ALL Total rows and variance_pct columns.
+Common error: missing closing parenthesis before AS numeric e.g. ROUND(CAST(...*100 AS numeric),2)
+Fix to: ROUND((...*100)::numeric, 2)
+This fix applies to EVERY ROUND(CAST(...)) pattern in the entire SQL without exception.
 
 Input SQL: {sql}
 """.strip()
@@ -1108,6 +1113,22 @@ high_level_sql GROUP BY "attrition_description","ruc_risk"
 high_level_sql GROUP BY "l8_description"
 -> description_sql GROUP BY "l8_description","l9_account","location"
 
+high_level_sql GROUP BY "quarter" with entity_name filter (client by quarter)
+-> description_sql GROUP BY "l7_description","l9_account","location" with same entity_name filter
+-> Copy entity_name filter EXACTLY as-is from high_level_sql — do not truncate or modify the name
+-> Copy "l7_account" filter EXACTLY as-is from high_level_sql
+-> amount: both version amounts + variance
+
+ENTITY NAME COPY RULE:
+The entity_name filter in high_level_sql must be copied EXACTLY into description_sql.
+Do not split, truncate, or modify the entity_name value.
+Example: "entity_name"='Droit Financial Technologies Exec Admin' -> copy as-is, never as 'Droit Financial Technologies'
+
+FILTER COPY RULE — STRICT:
+Every WHERE filter in high_level_sql must appear in description_sql unchanged.
+"l7_account" filter: copy exact value. If high_level_sql has "l7_account"='Revenue' -> description_sql must also have "l7_account"='Revenue'
+Never infer or substitute filter values.
+
 AMOUNT PATTERN (variance query — two CASE WHEN version blocks):
 ROUND((SUM(CASE WHEN "version"=[V1] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V1]",
 ROUND((SUM(CASE WHEN "version"=[V2] THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "[V2]",
@@ -1179,6 +1200,30 @@ SELECT * FROM (
     HAVING SUM(COALESCE("amount",0))<>0
 ) t
 ORDER BY "l9_account", ABS("variance") DESC
+
+--------------------------------------------------------
+Example 1b - CLIENT BY QUARTER (high_level_sql GROUP BY quarter with entity_name filter)
+--------------------------------------------------------
+User Question: Show the variance of Droit Financial Technologies Exec Admin by quarters
+
+high_level_sql GROUP BY: "quarter" (derived from "month")
+high_level_sql filters: "entity_name"='Droit Financial Technologies Exec Admin', "Year"=MAX, "l7_account"='Revenue'
+
+description_sql:
+SELECT * FROM (
+    SELECT "l7_description","l9_account","location",
+        ROUND((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "2+10",
+        ROUND((SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END)/1000000.0)::numeric,2) AS "1+11",
+        ROUND(((SUM(CASE WHEN "version"='2+10' THEN COALESCE("amount",0) ELSE 0 END)-
+        SUM(CASE WHEN "version"='1+11' THEN COALESCE("amount",0) ELSE 0 END))/1000000.0)::numeric,2) AS "variance"
+    FROM finance.forecast_data_new
+    WHERE "Year"=(SELECT MAX("Year") FROM finance.forecast_data_new)
+    AND "entity_name"='Droit Financial Technologies Exec Admin'
+    AND "l7_account"='Revenue'
+    GROUP BY "l7_description","l9_account","location"
+    HAVING SUM(COALESCE("amount",0))<>0
+) t
+ORDER BY "l7_description", ABS("variance") DESC
 
 --------------------------------------------------------
 Example 2 - GENERAL VARIANCE (high_level_sql GROUP BY l5_description)
