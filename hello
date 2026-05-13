@@ -998,19 +998,47 @@ All amounts 1 decimal place.
 Format: "Key customers driving variance: [EntityA] $X.XMn, [EntityB] -$X.XMn, [EntityC] $X.XMn, [EntityD] -$X.XMn<br>"
 
 LINE 2 — Risk client breakdown (separate line):
-Step 1: From table_txt_desc, filter rows where "ruc_risk" IN ('Risk ID','Risk UID') AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
-Step 2: From filtered rows, group by "entity_name" AND "l9_account", sum "variance" for each combination.
-Step 3: Remove EVERY name in the EXCLUDED NAMES list above from entity_name.
-Step 4: Now group just by "entity_name", sum variance across all l9_accounts for that entity.
-Step 5: Sort by ABS(variance) DESC. Pick top 3 entities.
-Step 6: For each of those 3 entities:
-  - From the filtered rows in Step 1, filter further where entity_name = that entity.
+
+This line shows which clients are driving the Risk ID + Risk UID variance.
+
+Step 1: From table_txt_desc, filter rows where:
+  - "ruc_risk" IN ('Risk ID','Risk UID')
+  - AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
+
+Step 2: From filtered rows, group by "entity_name", sum "variance".
+
+Step 3: Remove EVERY entity_name that exactly matches any of these names (hardcoded excluded list):
+  "RUC Adjustment","LRP Unnamed Adjustment","2026 New Sales Plan",
+  "New/Add-on  (sold in budget year/LRP Yr1)","FY2026 Revenue from FY26 Sales",
+  "2026 New Sales","License for 2026","Go get 2025- sales","Balance to LRP",
+  "0","Tie Back to LRP 2026","Front Arena - Go get 2026 sales","Sales not yet live",
+  "2026 Sales","UNATTAINABLE RISK - 2026","TAS Exec Admin","Increase sales",
+  "RD1 Budget tieback plug","Brighthouse Services, LLC","CPI Provision",
+  "Transaction Volume - per budget","Q4 2026 License","Transaction Volume Amendment",
+  "Recurring Sales for 2026-28","Hosting_SLA Fees Amend #13 thru 12.31.29",
+  "Tie Back to LRP","Q2 2026 License","Tie back to plan",
+  "Software Lic Risk Rev - Sales Unidentified","Getpaid ILF forecast (UID Risk)",
+  "Transaction Volume","Balance back to Budget","New September 2025 Deals",
+  "25 License o get","Unnamed LRP 26","2026 CPI Impact",
+  "Revenue from 2026 New/Add-On Sales","RISK - UNID","Reassign $10m placeholder",
+  "Q3 2026 License","Q1 licenses  Go Get 2026","Transaction Volume Syndtrak",
+  "Balance to Budget"
+  If entity_name matches ANY of the above exactly → remove it. No exceptions.
+
+Step 4: Sort remaining by ABS(variance) DESC. Pick top 3 entities.
+
+Step 5: For each of those 3 entities:
+  - Go back to filtered rows from Step 1.
+  - Filter further where entity_name = that entity exactly.
   - Group by "l9_account", sum "variance".
-  - Sort by ABS(variance) DESC. Show top 2 l9_account per entity.
-Format each entity as: "[EntityA] $X.XMn ([l9_account_A] $X.XMn, [l9_account_B] -$X.XMn)"
-Join all 3 entities with " | "
+  - Sort by ABS(variance) DESC. Show top 2 l9_account.
+
+Step 6: Write output line:
+Format each entity: "[EntityA] $X.XMn ([l9_A] $X.XMn, [l9_B] -$X.XMn)"
+Join with " | "
 Full line: "Risk clients: [EntityA] $X.XMn ([l9_A] $X.XMn, [l9_B] -$X.XMn) | [EntityB] -$X.XMn ([l9_C] -$X.XMn) | [EntityC] -$X.XMn ([l9_D] -$X.XMn)<br>"
-Only show this line if matching rows exist in table_txt_desc.
+All amounts 1 decimal place.
+Only show this line if Step 1 returns rows.
 
 VERIFICATION STEP (do this before writing output):
 Go through every entity_name you plan to show in LINE 1 and LINE 2.
