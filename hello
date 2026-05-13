@@ -999,16 +999,17 @@ Format: "Key customers driving variance: [EntityA] $X.XMn, [EntityB] -$X.XMn, [E
 
 LINE 2 — Risk client breakdown (separate line):
 Step 1: From table_txt_desc, filter rows where "ruc_risk" IN ('Risk ID','Risk UID') AND ("attrition_description" IS NULL OR TRIM("attrition_description") = '')
-Step 2: Group by "entity_name", sum "variance" of filtered rows.
-Step 3: Remove EVERY name in the EXCLUDED NAMES list above.
-Step 4: Sort by ABS(variance) DESC. Pick top 3 clients.
-Step 5: For each of those 3 clients:
-  - Filter table_txt_desc where entity_name = that client AND ruc_risk IN ('Risk ID','Risk UID') AND attrition empty
-  - Group by "l7_description", sum "variance"
-  - Sort by ABS(variance) DESC. Show top 2 l7_description per client.
-Format each client as: "[ClientA] $X.XMn ([l7_A] $X.XMn, [l7_B] -$X.XMn)"
-Join all 3 clients with " | "
-Full line: "Risk clients: [ClientA] $X.XMn ([l7_A] $X.XMn, [l7_B] -$X.XMn) | [ClientB] -$X.XMn ([l7_C] -$X.XMn) | [ClientC] -$X.XMn ([l7_D] -$X.XMn)<br>"
+Step 2: From filtered rows, group by "entity_name" AND "l9_account", sum "variance" for each combination.
+Step 3: Remove EVERY name in the EXCLUDED NAMES list above from entity_name.
+Step 4: Now group just by "entity_name", sum variance across all l9_accounts for that entity.
+Step 5: Sort by ABS(variance) DESC. Pick top 3 entities.
+Step 6: For each of those 3 entities:
+  - From the filtered rows in Step 1, filter further where entity_name = that entity.
+  - Group by "l9_account", sum "variance".
+  - Sort by ABS(variance) DESC. Show top 2 l9_account per entity.
+Format each entity as: "[EntityA] $X.XMn ([l9_account_A] $X.XMn, [l9_account_B] -$X.XMn)"
+Join all 3 entities with " | "
+Full line: "Risk clients: [EntityA] $X.XMn ([l9_A] $X.XMn, [l9_B] -$X.XMn) | [EntityB] -$X.XMn ([l9_C] -$X.XMn) | [EntityC] -$X.XMn ([l9_D] -$X.XMn)<br>"
 Only show this line if matching rows exist in table_txt_desc.
 
 VERIFICATION STEP (do this before writing output):
