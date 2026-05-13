@@ -691,12 +691,23 @@ SELECT * FROM (
     CASE "quarter" WHEN 'Q1' THEN 1 WHEN 'Q2' THEN 2 WHEN 'Q3' THEN 3 WHEN 'Q4' THEN 4 ELSE 5 END
 
 DETECTION RULES FOR FOLLOW-UP:
-"which [product level] products driving [account]" -> GROUP BY that product level WHERE that l9_account filter
+"which [product level] products driving [account]" -> GROUP BY that product level WHERE that l9_account filter. Do NOT add l7_account or l8_account filter.
 "variance of [client] by quarter" -> GROUP BY quarter WHERE entity_name = that client
 "breakdown of [client] by [product]" -> GROUP BY that product level WHERE entity_name = that client
 "[client] by [account]" -> GROUP BY l9_account WHERE entity_name = that client
-Keep ALL version and Year filters from previous SQL.
+"[client] by [product level]" -> GROUP BY that product level WHERE entity_name = that client
+"[product] by [client]" -> GROUP BY entity_name WHERE product filter from colvalue_mapping
+"top N [x] for [product/client]" -> GROUP BY x WHERE product or client filter
+Keep ALL version and Year filters from previous SQL only. No extra account filters unless user stated.
 Do not use CTEs or WITH clauses. Use simple CASE WHEN pattern only.
+
+FOLLOWUP KEY TAKEAWAY DRILL DOWN:
+For followup questions, response generator should also apply Part A + Part B routing:
+- If followup answer table groups by l7_description -> key takeaways drill to l9_account per l7
+- If followup answer table groups by l9_account -> key takeaways drill to l5_description and entity_name
+- If followup answer table groups by quarter -> key takeaways: one bullet per quarter with key insight
+- If followup answer table groups by entity_name -> key takeaways drill to l7_description per client
+All amounts 1 decimal place. End with Recommended focus. No Summary.
 
 Return ONLY JSON: {"sql": "SELECT ..."}
 Table: finance.forecast_data_new only.
@@ -832,7 +843,9 @@ GENERAL VARIANCE ANSWER FORMAT
 When question is a general forecast comparison and main table groups by "l9_account",
 follow this EXACT format shown in the example below.
 
-EXCLUDED CLIENT LIST — remove these from Customer Level Insight:
+EXCLUDED CLIENT LIST — remove these ONLY from Customer Level Insight in general comparison questions.
+Do NOT apply this list to variance questions, product questions, or any other question type.
+Excluded (exact match, Customer Level Insight only):
 "RUC Adjustment","LRP Unnamed Adjustment","2026 New Sales Plan",
 "New/Add-on  (sold in budget year/LRP Yr1)","FY2026 Revenue from FY26 Sales",
 "2026 New Sales","License for 2026","Go get 2025- sales","Balance to LRP",
@@ -888,23 +901,8 @@ GROUP BY "ruc_risk","l9_account","l5_description","entity_name","location"
 HAVING SUM(COALESCE("amount",0))<>0
 ORDER BY "l9_account", ABS("variance") DESC
 
-INPUT table_text (main table — result of Primary SQL):
-l9_account                                          | 2+10   | 1+11   | variance
-Transaction Processing and Broker Dealer Revenue    | 1709.2 | 1673.2 | 36.0
-Software License and Maintenance                    | 704.9  | 684.5  | 20.4
-Software License Revenue - Non-Recurring            | 454.5  | 441.4  | 13.0
-Pass Thru Revenue                                   | 12.6   | 22.0   | -9.4
-Total                                               | 2888.7 | 2827.5 | 61.2
-
-INPUT table_txt_desc (sample rows):
-ruc_risk | attrition_description | l9_account                    | l5_description             | entity_name                               | variance
-RUC      |                       | Transaction Processing...      | Treasury and Risk          | Droit Financial Technologies Exec Admin   | 34.5
-RUC      |                       | Transaction Processing...      | Treasury and Risk          | Wells Fargo Bank                          | 10.8
-         |                       | Transaction Processing...      | Corporate - Other Business | Franklin Templeton Investor Services, LLC | -47.2
-         |                       | Transaction Processing...      | Corporate - Other Business | Credit Suisse Group AG                    | -13.6
-         | Known attrition       | Pass Thru Revenue              | Corporate - Other Business | Mizuho                                    | -3.6
-RUC      |                       | Software License and Maint...  | Treasury and Risk          | Droit Financial Technologies Exec Admin   | 8.2
-         |                       | Software License and Maint...  | Corporate - Other Business | Franklin Templeton Investor Services, LLC | -2.5
+[table_text and table_txt_desc are provided at runtime from actual SQL results.
+Read all values dynamically. Do not use example values. Do not copy from this prompt.]
 
 ════════════════════════════════════════
 STEP 1: SUMMARY BLOCK calculation
