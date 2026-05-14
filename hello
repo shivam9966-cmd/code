@@ -1,199 +1,244 @@
-forecast_response_generator_prompt = """
-You are a senior data analyst. Convert SQL output into a concise user-ready answer.
+from modules.progress import emit_progress
+from modules.state import SQLState
+from modules.all_functions import build_json_for_waterfall_chart, to_human_readable, casual_query_response, dataframe_failure_response
+from modules.chart_router import detect_chart_type, build_chart_payload
+import pandas as pd
+import json
 
-INPUTS:
-Question: {user_query}
-SQL Used: {sql_query_txt}
-Table Output: {table_text}
-Description Table: {table_txt_desc}
+from modules.helpers import json_list_to_df, generate_commentary_package
 
-OUTPUT: ONLY valid JSON array. No markdown. No code blocks.
-[{"question_asked_by_user":"<q>","question_asked_by_model":"<q>","sql_query":"<sql>","answer_by_model":"<HTML>"}]
 
-════════════════════════════════════════
-COLUMN MAPPING
-════════════════════════════════════════
-L9 account   = l9_account  (e.g. Transaction Processing and Broker Dealer Revenue)
-L7 product   = l7_description
-L6 product   = l6_description
-L5 product   = l5_description
-Client       = entity_name
-RUC          = ruc_risk = 'RUC'
-Risk         = ruc_risk IN ('RISK-ID','RISK-UNID')
-Attrition    = attrition_description NOT NULL and NOT empty
+EXCLUDED_CLIENTS = {
+    "RUC Adjustment", "LRP Unnamed Adjustment", "2026 New Sales Plan",
+    "New/Add-on  (sold in budget year/LRP Yr1)", "FY2026 Revenue from FY26 Sales",
+    "2026 New Sales", "License for 2026", "Go get 2025- sales", "Balance to LRP",
+    "0", "Tie Back to LRP 2026", "Front Arena - Go get 2026 sales", "Sales not yet live",
+    "2026 Sales", "UNATTAINABLE RISK - 2026", "TAS Exec Admin", "Increase sales",
+    "RD1 Budget tieback plug", "Brighthouse Services, LLC", "CPI Provision",
+    "Transaction Volume - per budget", "Q4 2026 License", "Transaction Volume Amendment",
+    "Recurring Sales for 2026-28", "Hosting_SLA Fees Amend #13 thru 12.31.29",
+    "Tie Back to LRP", "Q2 2026 License", "Tie back to plan",
+    "Software Lic Risk Rev - Sales Unidentified", "Getpaid ILF forecast (UID Risk)",
+    "Transaction Volume", "Balance back to Budget", "New September 2025 Deals",
+    "25 License o get", "Unnamed LRP 26", "2026 CPI Impact",
+    "Revenue from 2026 New/Add-On Sales", "RISK - UNID", "Reassign $10m placeholder",
+    "Q3 2026 License", "Q1 licenses  Go Get 2026", "Transaction Volume Syndtrak",
+    "Balance to Budget"
+}
 
-════════════════════════════════════════
-ANSWER STRUCTURE — ALWAYS IN THIS ORDER
-════════════════════════════════════════
-1. HEADER LINE
-2. ONE-LINER
-3. SUMMARY BLOCK
-4. MAIN TABLE
-5. KEY TAKEAWAYS
-6. RECOMMENDED FOCUS
 
-Do not add Summary section at end. Do not add follow-up questions.
+def build_customer_insights(df_desc: pd.DataFrame) -> dict:
+    customer_insights = {"top_clients": [], "risk_clients": []}
 
-LINE 1 — HEADER:
-<b>Answer generated for: Capital Markets Forecast | {version_context} | {attrition_type} | {ruc_risk_type}</b>
-version_context: two versions -> "Latest vs Prior Forecast", single -> "Latest Forecast"
-attrition_type: from SQL filter or "All Attrition Types"
-ruc_risk_type: RUC -> "RUC (Revenue Under Contract)", RISK-ID -> "Risk ID", RISK-UNID -> "Risk UID", none -> "All RUC / Risk Types"
+    if df_desc is None or df_desc.empty:
+        return customer_insights
 
-LINE 2 — ONE-LINER:
-Single sentence with total value. e.g. "Total recurring revenue for FY2026 is $X,XXX.XMn."
+    if "entity_name" not in df_desc.columns:
+        return customer_insights
 
-LINE 3 — SUMMARY BLOCK:
-table_txt_desc has key "table_rows" — use it for all calculations below.
-If table_txt_desc is a list directly (not dict), use it as table_rows.
+    df_desc = df_desc.copy()
 
-RUC amount:       filter table_rows where ruc_risk='RUC' AND (attrition_description is null or empty) -> sum revenue_M or variance
-Risk amount:      filter table_rows where ruc_risk IN ('RISK-ID','RISK-UNID') AND attrition empty -> sum
-Attrition amount: filter table_rows where attrition_description is NOT null AND NOT empty -> sum
+    value_col = None
+    for col in ["variance", "revenue_M"]:
+        if col in df_desc.columns:
+            value_col = col
+            break
 
-For variance questions: show variance amounts
-For revenue questions: show revenue amounts
+    if value_col is None:
+        return customer_insights
 
-Format: <b>$[ruc]Mn from RUC | $[risk]Mn from Risk | $[attr]Mn from Attrition</b><br>
-All amounts 1 decimal place.
+    df_desc[value_col] = pd.to_numeric(df_desc[value_col], errors="coerce").fillna(0)
 
-LINE 4 — MAIN TABLE:
-Detect question type from SQL GROUP BY and question keywords:
+    top_clients = (
+        df_desc[~df_desc["entity_name"].isin(EXCLUDED_CLIENTS)]
+        .groupby("entity_name")[value_col]
+        .sum()
+        .reset_index()
+        .rename(columns={value_col: "variance"})
+        .assign(variance=lambda x: x["variance"].round(1))
+        .sort_values("variance", ascending=False, key=abs)
+        .head(5)
+    )
+    customer_insights["top_clients"] = top_clients.to_dict(orient="records")
 
-GENERAL VARIANCE (no product/client filter, two versions):
-  GROUP BY l9_account. Columns: L9 Account | 2+10 ($M) | 1+11 ($M) | Variance ($M) | Variance %
+    if "ruc_risk" in df_desc.columns and "l9_account" in df_desc.columns:
+        risk_df = df_desc[df_desc["ruc_risk"].isin(["RISK-ID", "RISK-UNID"])].copy()
 
-ACCOUNT QUESTION (recurring/non-recurring/revenue, no product/client filter):
-  GROUP BY l9_account. Columns: L9 Account | Revenue ($M)
+        if not risk_df.empty:
+            risk_clients = (
+                risk_df[~risk_df["entity_name"].isin(EXCLUDED_CLIENTS)]
+                .groupby("entity_name")[value_col]
+                .sum()
+                .reset_index()
+                .assign(**{value_col: lambda x: x[value_col].round(1)})
+                .sort_values(value_col, ascending=False, key=abs)
+                .head(3)
+            )
 
-SPECIFIC CLIENT:
-  GROUP BY l7_description. Columns: L7 Product | Revenue ($M)
+            risk_result = []
+            for _, row in risk_clients.iterrows():
+                entity = row["entity_name"]
+                l9_breakdown = (
+                    risk_df[risk_df["entity_name"] == entity]
+                    .groupby("l9_account")[value_col]
+                    .sum()
+                    .reset_index()
+                    .assign(**{value_col: lambda x: x[value_col].round(1)})
+                    .sort_values(value_col, ascending=False, key=abs)
+                    .head(2)
+                    .to_dict(orient="records")
+                )
+                risk_result.append({
+                    "entity_name": entity,
+                    "variance": round(float(row[value_col]), 1),
+                    "l9_accounts": l9_breakdown
+                })
 
-TOP N CLIENTS:
-  GROUP BY entity_name. Columns: Client | Revenue ($M)
+            customer_insights["risk_clients"] = risk_result
 
-SPECIFIC PRODUCT:
-  GROUP BY l9_account. Columns: L9 Account | Revenue ($M) or Variance ($M)
+    print("=== CUSTOMER INSIGHTS ===")
+    print(json.dumps(customer_insights, indent=2))
 
-TOP N PRODUCTS:
-  GROUP BY l6_description (or stated level). Columns: Product | Revenue ($M)
+    return customer_insights
 
-RUC QUESTION:   GROUP BY l6_description. Columns: L6 Product | Revenue/Variance ($M)
-RISK QUESTION:  GROUP BY ruc_risk. Columns: Risk Type | Revenue/Variance ($M)
-ATTRITION:      GROUP BY attrition_description. Columns: Attrition Type | Revenue/Variance ($M)
 
-HTML TABLE RULES:
-Color ALL numeric cells: positive -> <td style="color:green">, negative -> <td style="color:red">
-Double quotes in style attributes. $M formatting. Total/Grand Total row last.
-Variance columns: show actual version strings e.g. "2+10 ($M)" and "1+11 ($M)"
+def node_build_answer(state: SQLState):
+    emit_progress("final_answer", "running")
 
-LINE 5 — KEY TAKEAWAYS:
-Detect question type then apply correct drill down.
-Use table_txt_desc["table_rows"] for all drill downs.
-Apply 80% cascading rule at every level: sort by ABS DESC, pick until cumulative >= 80%, MAX 5, MIN 2.
-All amounts 1 decimal place.
+    if state["is_greeting_or_business"] == "greetings":
+        greetings_ans = casual_query_response(state.get("user_query"))
+        emit_progress("final_answer", "completed")
+        return {
+            "waterfall_json": [],
+            "chart_type": [],
+            "chart_payload": [],
+            "answer": greetings_ans,
+            "embedding_str": [],
+            "history": []
+        }
 
-══ GENERAL VARIANCE (two versions, no filter) ══
-From table_text, pick key l9_accounts (80% of total variance).
-For each key l9_account:
-  Filter table_rows where l9_account = that account.
-  Group by l5_description, sum variance. Sort ABS DESC. Show top 3.
-  Format: "[l9_account]: $X.XMn variance driven by following L5 Products - [l5_A] $X.XMn and [l5_B] -$X.XMn"
-Then Customer Level Insight from table_txt_desc["customer_insights"]["top_clients"].
-Then Risk Analysis from table_txt_desc["customer_insights"]["risk_clients"].
+    if state["sql_decision"] == "retry_sql_counter" or state["desc_sql_decision"] == "retry_desc_sql_counter":
+        failure_ans = dataframe_failure_response(state.get("user_query"), state["input_file"])
+        emit_progress("final_answer", "completed")
+        return {
+            "waterfall_json": [],
+            "chart_type": [],
+            "chart_payload": [],
+            "answer": failure_ans,
+            "embedding_str": [],
+            "history": []
+        }
 
-══ ACCOUNT QUESTION (recurring/non-recurring/revenue) ══
-From table_text, pick key l9_accounts (80% of total revenue).
-For each key l9_account:
-  Filter table_rows where l9_account = that account.
-  Group by l6_description, sum revenue_M. Sort ABS DESC. Show top 3.
-  Then for each l6_description: group by entity_name, show top 3 clients.
-  Format: "• <b>[l9_account]</b> $X.XMn:<br>  — [l6_A] $X.XMn: [entity_A] $X.XMn, [entity_B] $X.XMn<br>"
+    df_json = state.get("_df")
+    df_desc_json = state.get("_df_desc")
 
-══ SPECIFIC CLIENT ══
-From table_text, pick key l7_descriptions (80% of client total).
-For each key l7_description:
-  Filter table_rows where l7_description = that product.
-  Group by l9_account, sum revenue_M. Sort ABS DESC. Show top 3.
-  Format: "• <b>[l7_description]</b> $X.XMn:<br>  — [l9_A] $X.XMn<br>"
+    df = json_list_to_df(df_json) if df_json else None
+    df_desc = json_list_to_df(df_desc_json) if df_desc_json else None
 
-══ TOP N CLIENTS ══
-From table_text, pick key entity_names (80% of total).
-For each key client:
-  Filter table_rows where entity_name = that client.
-  Group by l7_description, sum revenue_M. Sort ABS DESC.
-  For each l7: show top 2 l9_account.
-  Format: "• <b>[entity_name]</b> $X.XMn:<br>  — <b>[l7_A]</b> $X.XMn: [l9_X] $X.XMn, [l9_Y] $X.XMn<br>"
+    # Generate data.json for frontend
+    df_desc_insights = generate_commentary_package(df_desc)
+    with open("data.json", "w", encoding="utf-8") as f:
+        json.dump(df_desc_insights, f, indent=4)
 
-══ SPECIFIC PRODUCT ══
-From table_text, pick key l9_accounts (80% of product total).
-For each key l9_account:
-  Filter table_rows where l9_account = that account.
-  Group by entity_name, sum revenue_M. Sort ABS DESC. Show top 3.
-  Format: "• <b>[l9_account]</b> $X.XMn:<br>  — [entity_A] $X.XMn<br>"
+    print("=== DATA.JSON FINAL KEYS ===", list(df_desc_insights.keys()))
+    print("=== VARIANCE_DRIVERS KEYS ===", list(df_desc_insights.get("variance_drivers", {}).keys()))
 
-══ TOP N PRODUCTS ══
-From table_text, pick key l6_descriptions (80% of total).
-For each key l6_description:
-  Filter table_rows where l6_description = that product.
-  Group by l9_account, sum. Show top 3.
-  Then group by entity_name. Show top 3 clients.
-  Format: "• <b>[l6_description]</b> $X.XMn:<br>  — [l9_A] $X.XMn<br>  — [entity_A] $X.XMn<br>"
+    print("=== DF_DESC COLUMNS ===")
+    if df_desc is not None:
+        print(df_desc.columns.tolist())
+        print(df_desc.head(5).to_string())
+    else:
+        print("df_desc is None")
 
-══ RUC QUESTION ══
-From table_text, pick key l6_descriptions (80% of RUC total).
-For each key l6_description:
-  Filter table_rows where l6_description = that product AND ruc_risk='RUC'.
-  Group by entity_name. Show top 3 clients.
-  Format: "• <b>[l6_description]</b> $X.XMn:<br>  — [entity_A] $X.XMn<br>"
+    # Build customer insights in Python
+    customer_insights = build_customer_insights(df_desc)
 
-══ RISK QUESTION ══
-From table_text, pick key ruc_risk values (RISK-ID and RISK-UNID).
-For each:
-  Filter table_rows where ruc_risk = that value.
-  Group by l6_description. Show top 3.
-  Then group by entity_name per l6. Show top 2 clients.
-  Format: "• <b>[RISK-ID/RISK-UNID]</b> $X.XMn:<br>  — [l6_A] $X.XMn: [entity_A] $X.XMn<br>"
+    # Trim df_desc to top 100 rows for LLM
+    if df_desc is not None and len(df_desc) > 0:
+        sort_col = None
+        for col in ["variance", "revenue_M", "2+10", "1+11"]:
+            if col in df_desc.columns:
+                sort_col = col
+                break
 
-══ ATTRITION QUESTION ══
-From table_text, pick key attrition_description values.
-For each:
-  Filter table_rows where attrition_description = that type.
-  Group by l6_description. Show top 3.
-  Then group by entity_name per l6. Show top 2 clients.
-  Format: "• <b>[attrition_type]</b> $X.XMn:<br>  — [l6_A] $X.XMn: [entity_A] $X.XMn<br>"
+        if sort_col:
+            df_desc[sort_col] = pd.to_numeric(df_desc[sort_col], errors="coerce").fillna(0)
 
-════════════════════════════════════════
-EXCLUDED CLIENTS — remove from ALL entity_name outputs
-════════════════════════════════════════
-"RUC Adjustment","LRP Unnamed Adjustment","2026 New Sales Plan",
-"New/Add-on  (sold in budget year/LRP Yr1)","FY2026 Revenue from FY26 Sales",
-"2026 New Sales","License for 2026","Go get 2025- sales","Balance to LRP",
-"0","Tie Back to LRP 2026","Front Arena - Go get 2026 sales","Sales not yet live",
-"2026 Sales","UNATTAINABLE RISK - 2026","TAS Exec Admin","Increase sales",
-"RD1 Budget tieback plug","Brighthouse Services, LLC","CPI Provision",
-"Transaction Volume - per budget","Q4 2026 License","Transaction Volume Amendment",
-"Recurring Sales for 2026-28","Hosting_SLA Fees Amend #13 thru 12.31.29",
-"Tie Back to LRP","Q2 2026 License","Tie back to plan",
-"Software Lic Risk Rev - Sales Unidentified","Getpaid ILF forecast (UID Risk)",
-"Transaction Volume","Balance back to Budget","New September 2025 Deals",
-"25 License o get","Unnamed LRP 26","2026 CPI Impact",
-"Revenue from 2026 New/Add-On Sales","RISK - UNID","Reassign $10m placeholder",
-"Q3 2026 License","Q1 licenses  Go Get 2026","Transaction Volume Syndtrak",
-"Balance to Budget"
-Check every entity_name against this list before showing. Skip if matched.
+            if sort_col == "variance":
+                top_positive = (
+                    df_desc[df_desc[sort_col] > 0]
+                    .sort_values(by=sort_col, ascending=False)
+                    .head(50)
+                )
+                top_negative = (
+                    df_desc[df_desc[sort_col] < 0]
+                    .sort_values(by=sort_col, ascending=True)
+                    .head(50)
+                )
+                df_desc = pd.concat([top_positive, top_negative], ignore_index=True)
+            else:
+                df_desc = df_desc.sort_values(by=sort_col, ascending=False).head(100)
 
-════════════════════════════════════════
-SPECIAL TABLE RULES
-════════════════════════════════════════
-FLAT TABLE (SQL has both attrition_description + ruc_risk + row_type columns):
-Show ONLY row_type='summary'. Columns: Description | Latest ($M) | Previous ($M) | Variance ($M) | Variance %
-Row order: RUC, RISK-ID, RISK-UNID, attrition provision, Known attrition, Specific attrition, Total.
-Total from row_type='total_row' only.
+            df_desc = df_desc.reset_index(drop=True)
 
-QUARTERLY (SQL has quarter + description + row_type):
-4 separate tables. <h4>Q1</h4>...<h4>Q4</h4>. All 4 must appear.
+    # Build LLM payload — always pass both table_rows and customer_insights
+    if df_desc is not None:
+        llm_desc_payload = {
+            "table_rows": df_desc.head(100).to_dict(orient="records"),
+            "customer_insights": customer_insights
+        }
+    else:
+        llm_desc_payload = {
+            "table_rows": [],
+            "customer_insights": customer_insights
+        }
 
-LINE 6 — RECOMMENDED FOCUS:
-<b>Recommended focus:</b> [one CFO-level actionable sentence based on actual data]
-""".strip()
+    # Guard: no data
+    if df is None or df.empty:
+        emit_progress("final_answer", "completed")
+        ans = (
+            "I couldn't find the data. "
+            "Please check the selected report, reframe the query and try again!"
+        )
+        return {
+            "waterfall_json": [],
+            "answer": ans,
+            "embedding_str": [],
+            "history": []
+        }
+
+    # Chart handling
+    chart_json = json.loads(state.get("chart_payload") or "{}")
+    waterfall_json = chart_json if chart_json.get("type") == "waterfall" else []
+
+    applied = state.get("applied_defaults") or []
+    if applied:
+        applied_defaults_note = (
+            "<p><em>Note: I applied these defaults — "
+            + "; ".join(applied)
+            + ".</em></p>"
+        )
+    else:
+        applied_defaults_note = ""
+
+    answer, embedding_str = to_human_readable(
+        state.get("user_query"),
+        state.get("question"),
+        state.get("final_sql"),
+        df,
+        llm_desc_payload,
+        state.get("input_file"),
+        applied_defaults_note
+    )
+
+    print("=== ANSWER LENGTH ===", len(answer) if answer else 0)
+    print("=== ANSWER FIRST 500 ===", answer[:500] if answer else "EMPTY")
+
+    emit_progress("final_answer", "completed")
+
+    return {
+        "waterfall_json": waterfall_json,
+        "answer": answer,
+        "embedding_str": embedding_str,
+        "history": [{"q": state.get("question"), "a": answer}]
+    }
