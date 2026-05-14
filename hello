@@ -7,15 +7,15 @@ SQL Used: {sql_query_txt}
 Table Output: {table_text}
 Description Table: {table_txt_desc}
 
-OUTPUT: ONLY valid JSON array.
-JSON: [{"question_asked_by_user":"<q>","question_asked_by_model":"<q>","sql_query":"<sql>","answer_by_model":"<HTML>"}]
+OUTPUT: ONLY valid JSON array. No markdown. No code blocks.
+[{"question_asked_by_user":"<q>","question_asked_by_model":"<q>","sql_query":"<sql>","answer_by_model":"<HTML>"}]
 
 ════════════════════════════════════════
-COLUMN MAPPING (old schema)
+COLUMN MAPPING
 ════════════════════════════════════════
-L7 account   = l9_account
-L6 product   = l6_description
+L9 account   = l9_account  (e.g. Transaction Processing and Broker Dealer Revenue)
 L7 product   = l7_description
+L6 product   = l6_description
 L5 product   = l5_description
 Client       = entity_name
 RUC          = ruc_risk = 'RUC'
@@ -25,157 +25,146 @@ Attrition    = attrition_description NOT NULL and NOT empty
 ════════════════════════════════════════
 ANSWER STRUCTURE — ALWAYS IN THIS ORDER
 ════════════════════════════════════════
-Line 1: <b>Answer generated for: Capital Markets Forecast | {version_context} | {attrition_type} | {ruc_risk_type}</b>
-Line 2: One-liner with key metric value.
-Line 3: Summary block (RUC/Risk/Attrition split) — see rules below.
-Line 4: Main HTML table — see condition rules below.
-Line 5: Key Takeaways — see condition rules below.
-Line 6: <b>Recommended focus:</b> [one CFO-level sentence]
-Do not add Summary section. Do not add follow-up questions.
+1. HEADER LINE
+2. ONE-LINER
+3. SUMMARY BLOCK
+4. MAIN TABLE
+5. KEY TAKEAWAYS
+6. RECOMMENDED FOCUS
 
-version_context: two versions compared -> "Latest vs Prior Forecast", single -> "Latest Forecast"
-attrition_type: from attrition_description filter: Known Attrition / Specific Attrition / Attrition Provision / All Attrition Types
-ruc_risk_type: from ruc_risk filter: RUC -> 'RUC (Revenue Under Contract)', RISK-ID -> 'Risk ID (Risk Identified)', RISK-UNID -> 'Risk UID (Risk Unidentified)', none -> 'All RUC / Risk Types'
+Do not add Summary section at end. Do not add follow-up questions.
 
-════════════════════════════════════════
-SUMMARY BLOCK — RULES
-════════════════════════════════════════
-Calculate from table_txt_desc (use "table_rows" key if present, else use table_txt_desc directly):
+LINE 1 — HEADER:
+<b>Answer generated for: Capital Markets Forecast | {version_context} | {attrition_type} | {ruc_risk_type}</b>
+version_context: two versions -> "Latest vs Prior Forecast", single -> "Latest Forecast"
+attrition_type: from SQL filter or "All Attrition Types"
+ruc_risk_type: RUC -> "RUC (Revenue Under Contract)", RISK-ID -> "Risk ID", RISK-UNID -> "Risk UID", none -> "All RUC / Risk Types"
 
-For VARIANCE questions (two versions compared):
-  RUC variance:       filter ruc_risk='RUC' AND (attrition_description IS NULL OR empty) -> sum "variance"
-  Risk variance:      filter ruc_risk IN ('RISK-ID','RISK-UNID') AND attrition empty -> sum "variance"
-  Attrition variance: filter attrition_description NOT NULL AND NOT empty -> sum "variance"
-  Format: <b>$[ruc]Mn came from RUC | $[risk]Mn came from Risk | $[attr]Mn from Attrition</b><br>
+LINE 2 — ONE-LINER:
+Single sentence with total value. e.g. "Total recurring revenue for FY2026 is $X,XXX.XMn."
 
-For REVENUE questions (single version):
-  RUC revenue:       filter ruc_risk='RUC' AND attrition empty -> sum "revenue_M" or "2+10" column
-  Risk revenue:      filter ruc_risk IN ('RISK-ID','RISK-UNID') AND attrition empty -> sum
-  Attrition revenue: filter attrition_description NOT NULL AND NOT empty -> sum
-  Format: <b>$[ruc]Mn from RUC | $[risk]Mn from Risk | $[attr]Mn from Attrition</b><br>
+LINE 3 — SUMMARY BLOCK:
+table_txt_desc has key "table_rows" — use it for all calculations below.
+If table_txt_desc is a list directly (not dict), use it as table_rows.
 
-Which conditions show Summary block:
-Condition 1 (Specific Product)   -> show RUC + Risk + Attrition
-Condition 2 (Top N Products)     -> show RUC + Risk only
-Condition 3 (Specific Client)    -> show RUC + Risk + Attrition
-Condition 4 (Top N Clients)      -> show RUC + Risk + Attrition
-Condition 5 (Account only)       -> show RUC + Risk + Attrition
-Q-Type RUC                       -> show RUC breakdown
-Q-Type Risk                      -> show Risk ID vs Risk UID split
-Q-Type Attrition                 -> show attrition type breakdown
+RUC amount:       filter table_rows where ruc_risk='RUC' AND (attrition_description is null or empty) -> sum revenue_M or variance
+Risk amount:      filter table_rows where ruc_risk IN ('RISK-ID','RISK-UNID') AND attrition empty -> sum
+Attrition amount: filter table_rows where attrition_description is NOT null AND NOT empty -> sum
 
+For variance questions: show variance amounts
+For revenue questions: show revenue amounts
+
+Format: <b>$[ruc]Mn from RUC | $[risk]Mn from Risk | $[attr]Mn from Attrition</b><br>
 All amounts 1 decimal place.
 
-════════════════════════════════════════
-MAIN TABLE RULES — BY CONDITION
-════════════════════════════════════════
+LINE 4 — MAIN TABLE:
+Detect question type from SQL GROUP BY and question keywords:
 
-Condition 1 — Specific Product (user names a specific product):
-  State product total first as one-liner.
-  Table: GROUP BY l9_account (L7 account breakdown for that product)
-  Columns: L7 Account | Revenue/Variance ($M)
+GENERAL VARIANCE (no product/client filter, two versions):
+  GROUP BY l9_account. Columns: L9 Account | 2+10 ($M) | 1+11 ($M) | Variance ($M) | Variance %
 
-Condition 2 — Top N Products:
-  Table: GROUP BY stated product level or l6_description (default)
-  Columns: Product | Revenue/Variance ($M)
+ACCOUNT QUESTION (recurring/non-recurring/revenue, no product/client filter):
+  GROUP BY l9_account. Columns: L9 Account | Revenue ($M)
 
-Condition 3 — Specific Client:
-  State client total first as one-liner.
-  Table: GROUP BY l7_description (L7 product breakdown for that client)
-  Columns: L7 Product | Revenue ($M)
+SPECIFIC CLIENT:
+  GROUP BY l7_description. Columns: L7 Product | Revenue ($M)
 
-Condition 4 — Top N Clients:
-  Table: GROUP BY entity_name
-  Columns: Client | Revenue/Variance ($M)
+TOP N CLIENTS:
+  GROUP BY entity_name. Columns: Client | Revenue ($M)
 
-Condition 5 — Account only:
-  Table: GROUP BY l9_account (L7 account)
-  Columns: L7 Account | Revenue/Variance ($M)
+SPECIFIC PRODUCT:
+  GROUP BY l9_account. Columns: L9 Account | Revenue ($M) or Variance ($M)
 
-Q-Type RUC:   Table GROUP BY l6_description
-Q-Type Risk:  Table GROUP BY ruc_risk (RISK-ID vs RISK-UNID)
-Q-Type Attrition: Table GROUP BY attrition_description
+TOP N PRODUCTS:
+  GROUP BY l6_description (or stated level). Columns: Product | Revenue ($M)
+
+RUC QUESTION:   GROUP BY l6_description. Columns: L6 Product | Revenue/Variance ($M)
+RISK QUESTION:  GROUP BY ruc_risk. Columns: Risk Type | Revenue/Variance ($M)
+ATTRITION:      GROUP BY attrition_description. Columns: Attrition Type | Revenue/Variance ($M)
 
 HTML TABLE RULES:
 Color ALL numeric cells: positive -> <td style="color:green">, negative -> <td style="color:red">
-Double quotes in style attributes. $M formatting. Total row last.
-Variance table columns: [group-by col] | [V1] ($M) | [V2] ($M) | Variance ($M) | Variance %
-Version comparison headers: show actual version strings e.g. "2+10 ($M)" and "1+11 ($M)"
+Double quotes in style attributes. $M formatting. Total/Grand Total row last.
+Variance columns: show actual version strings e.g. "2+10 ($M)" and "1+11 ($M)"
 
-════════════════════════════════════════
-KEY TAKEAWAYS — BY CONDITION
-════════════════════════════════════════
-table_txt_desc structure:
-- If comparison question: {"table_rows": [...], "customer_insights": {"top_clients": [...], "risk_clients": [...]}}
-- All other questions: list of rows directly
+LINE 5 — KEY TAKEAWAYS:
+Detect question type then apply correct drill down.
+Use table_txt_desc["table_rows"] for all drill downs.
+Apply 80% cascading rule at every level: sort by ABS DESC, pick until cumulative >= 80%, MAX 5, MIN 2.
+All amounts 1 decimal place.
 
-CONDITION 1 — Specific Product:
-  From table_txt_desc, group by entity_name, sum variance/revenue.
-  Remove EXCLUDED CLIENTS (see list below). Sort by ABS DESC. Show top 5.
-  Format: "• <b>[entity_A]</b> $X.XMn<br>"
+══ GENERAL VARIANCE (two versions, no filter) ══
+From table_text, pick key l9_accounts (80% of total variance).
+For each key l9_account:
+  Filter table_rows where l9_account = that account.
+  Group by l5_description, sum variance. Sort ABS DESC. Show top 3.
+  Format: "[l9_account]: $X.XMn variance driven by following L5 Products - [l5_A] $X.XMn and [l5_B] -$X.XMn"
+Then Customer Level Insight from table_txt_desc["customer_insights"]["top_clients"].
+Then Risk Analysis from table_txt_desc["customer_insights"]["risk_clients"].
 
-CONDITION 2 — Top N Products:
-  Section 1: L7 account breakdown per product (l9_account per l6_description)
-  Section 2: Client breakdown per product (entity_name per l6_description)
-  Format: "• <b>[l6_description]</b> $X.XMn:<br>  — [l9_account_A] $X.XMn<br>  — [entity_A] $X.XMn<br>"
+══ ACCOUNT QUESTION (recurring/non-recurring/revenue) ══
+From table_text, pick key l9_accounts (80% of total revenue).
+For each key l9_account:
+  Filter table_rows where l9_account = that account.
+  Group by l6_description, sum revenue_M. Sort ABS DESC. Show top 3.
+  Then for each l6_description: group by entity_name, show top 3 clients.
+  Format: "• <b>[l9_account]</b> $X.XMn:<br>  — [l6_A] $X.XMn: [entity_A] $X.XMn, [entity_B] $X.XMn<br>"
 
-CONDITION 3 — Specific Client:
-  From table_txt_desc, for each l7_description, show its l9_account breakdown.
-  Format: "• <b>[l7_description]</b> $X.XMn:<br>  — [l9_account_A] $X.XMn<br>"
+══ SPECIFIC CLIENT ══
+From table_text, pick key l7_descriptions (80% of client total).
+For each key l7_description:
+  Filter table_rows where l7_description = that product.
+  Group by l9_account, sum revenue_M. Sort ABS DESC. Show top 3.
+  Format: "• <b>[l7_description]</b> $X.XMn:<br>  — [l9_A] $X.XMn<br>"
 
-CONDITION 4 — Top N Clients:
-  Section 1: L7 product per client (l7_description per entity_name)
-  Section 2: L7 account per L7 product (l9_account per l7_description)
-  Format: "• <b>[entity_name]</b> $X.XMn:<br>  — <b>[l7_A]</b> $X.XMn: [l9_X] $X.XMn<br>"
+══ TOP N CLIENTS ══
+From table_text, pick key entity_names (80% of total).
+For each key client:
+  Filter table_rows where entity_name = that client.
+  Group by l7_description, sum revenue_M. Sort ABS DESC.
+  For each l7: show top 2 l9_account.
+  Format: "• <b>[entity_name]</b> $X.XMn:<br>  — <b>[l7_A]</b> $X.XMn: [l9_X] $X.XMn, [l9_Y] $X.XMn<br>"
 
-CONDITION 5 — Account only (and general comparison):
-  THREE SECTIONS:
+══ SPECIFIC PRODUCT ══
+From table_text, pick key l9_accounts (80% of product total).
+For each key l9_account:
+  Filter table_rows where l9_account = that account.
+  Group by entity_name, sum revenue_M. Sort ABS DESC. Show top 3.
+  Format: "• <b>[l9_account]</b> $X.XMn:<br>  — [entity_A] $X.XMn<br>"
 
-  Section 1 — <b>Account x Product Insight</b><br>
-  From table_rows (or table_txt_desc directly):
-  For each key l9_account (80% rule from main table):
-    Filter where l9_account = that account. Group by l5_description, sum variance.
-    Sort by ABS DESC. Show top 3 l5 products.
-    Format: "[l9_account]: $X.XMn variance driven by following L5 Products - [l5_A] $X.XMn and [l5_B] -$X.XMn<br>"
+══ TOP N PRODUCTS ══
+From table_text, pick key l6_descriptions (80% of total).
+For each key l6_description:
+  Filter table_rows where l6_description = that product.
+  Group by l9_account, sum. Show top 3.
+  Then group by entity_name. Show top 3 clients.
+  Format: "• <b>[l6_description]</b> $X.XMn:<br>  — [l9_A] $X.XMn<br>  — [entity_A] $X.XMn<br>"
 
-  Section 2 — <b>Customer Level Insight</b><br>
-  Use customer_insights["top_clients"] if available, else group by entity_name from table_rows.
-  Remove EXCLUDED CLIENTS. Sort by ABS DESC. Show top 5.
-  Format: "Key customers driving variance: [EntityA] $X.XMn, [EntityB] -$X.XMn<br>"
-
-  Section 3 — <b>Risk Analysis</b><br>
-  Use customer_insights["risk_clients"] if available.
-  Format: "Risk clients: [EntityA] $X.XMn ([l9_A] $X.XMn, [l9_B] -$X.XMn) | [EntityB] ...<br>"
-  Only show if risk_clients not empty.
-
-Q-TYPE RUC:
-  Section 1: RUC breakdown by l6_description
-  Section 2: l6_description by entity_name
-  Section 3: entity_name totals
+══ RUC QUESTION ══
+From table_text, pick key l6_descriptions (80% of RUC total).
+For each key l6_description:
+  Filter table_rows where l6_description = that product AND ruc_risk='RUC'.
+  Group by entity_name. Show top 3 clients.
   Format: "• <b>[l6_description]</b> $X.XMn:<br>  — [entity_A] $X.XMn<br>"
 
-Q-TYPE RISK:
-  Section 1: RISK-ID vs RISK-UNID split
-  Section 2: l6_description per risk type
-  Section 3: entity_name per l6_description
+══ RISK QUESTION ══
+From table_text, pick key ruc_risk values (RISK-ID and RISK-UNID).
+For each:
+  Filter table_rows where ruc_risk = that value.
+  Group by l6_description. Show top 3.
+  Then group by entity_name per l6. Show top 2 clients.
   Format: "• <b>[RISK-ID/RISK-UNID]</b> $X.XMn:<br>  — [l6_A] $X.XMn: [entity_A] $X.XMn<br>"
 
-Q-TYPE ATTRITION:
-  Section 1: attrition_description breakdown
-  Section 2: l6_description per attrition type
-  Section 3: entity_name per l6_description
+══ ATTRITION QUESTION ══
+From table_text, pick key attrition_description values.
+For each:
+  Filter table_rows where attrition_description = that type.
+  Group by l6_description. Show top 3.
+  Then group by entity_name per l6. Show top 2 clients.
   Format: "• <b>[attrition_type]</b> $X.XMn:<br>  — [l6_A] $X.XMn: [entity_A] $X.XMn<br>"
 
 ════════════════════════════════════════
-80% CASCADING RULE (applies to all drill downs)
-════════════════════════════════════════
-Step 1: From main table, sort by ABS(value) DESC. Pick until cumulative >= 80% of total. MAX 5. MIN 2.
-Step 2: For each key item, filter table_txt_desc where that column = key item. Group by next level. Pick until 80%. MAX 5. MIN 2.
-Step 3: Repeat for third level if applicable.
-All amounts 1 decimal place.
-
-════════════════════════════════════════
-EXCLUDED CLIENTS (remove from ALL customer outputs)
+EXCLUDED CLIENTS — remove from ALL entity_name outputs
 ════════════════════════════════════════
 "RUC Adjustment","LRP Unnamed Adjustment","2026 New Sales Plan",
 "New/Add-on  (sold in budget year/LRP Yr1)","FY2026 Revenue from FY26 Sales",
@@ -192,25 +181,19 @@ EXCLUDED CLIENTS (remove from ALL customer outputs)
 "Revenue from 2026 New/Add-On Sales","RISK - UNID","Reassign $10m placeholder",
 "Q3 2026 License","Q1 licenses  Go Get 2026","Transaction Volume Syndtrak",
 "Balance to Budget"
+Check every entity_name against this list before showing. Skip if matched.
 
 ════════════════════════════════════════
-FLAT TABLE RULE (SQL has both attrition_description + ruc_risk columns)
+SPECIAL TABLE RULES
 ════════════════════════════════════════
-Show ONLY row_type='summary' rows. 5 columns: Description, Latest($M), Previous($M), Variance($M), Variance%.
-Row order: RUC, RISK-ID, RISK-UNID, Attrition Provision, Known Attrition, Specific Attrition, Total.
+FLAT TABLE (SQL has both attrition_description + ruc_risk + row_type columns):
+Show ONLY row_type='summary'. Columns: Description | Latest ($M) | Previous ($M) | Variance ($M) | Variance %
+Row order: RUC, RISK-ID, RISK-UNID, attrition provision, Known attrition, Specific attrition, Total.
 Total from row_type='total_row' only.
 
-════════════════════════════════════════
-QUARTERLY BREAKDOWN (SQL has quarter + description + row_type)
-════════════════════════════════════════
-4 separate HTML tables. <h4>Q1</h4>...<h4>Q4</h4>. All 4 must appear.
-Key Takeaways: one bullet per quarter. End with Recommended focus.
+QUARTERLY (SQL has quarter + description + row_type):
+4 separate tables. <h4>Q1</h4>...<h4>Q4</h4>. All 4 must appear.
 
-════════════════════════════════════════
-DRIVERS QUERY (row_type='summary' + row_type='customer')
-════════════════════════════════════════
-For each summary row, find matching customer rows. Pick top 3 by ABS(variance).
-Bullet: "• <b>[Description]</b> variance of <span style="color:green"><b>+$X.XMn</b></span> driven by [e1](...), [e2](...), [e3](...).<br>"
-Order: RUC, RISK-ID, RISK-UNID, Attrition Provision, Known Attrition, Specific Attrition.
-End: <b>Recommended focus:</b>
+LINE 6 — RECOMMENDED FOCUS:
+<b>Recommended focus:</b> [one CFO-level actionable sentence based on actual data]
 """.strip()
